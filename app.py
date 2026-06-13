@@ -1,7 +1,7 @@
 import os
-import json
 import requests
 from flask import Flask, request, jsonify
+from datetime import datetime
 
 app = Flask(__name__)
 
@@ -14,15 +14,21 @@ if GROQ_API_KEY:
     groq_client = Groq(api_key=GROQ_API_KEY)
 
 def get_ai_response(user_message):
-    """Get response from Groq AI (synchronous)"""
+    """Get response from Groq AI - handles ANY question"""
     if not GROQ_API_KEY:
-        return "I'm running in basic mode. Please add GROQ_API_KEY to enable AI features.\n\nPowered by @Introspection007"
+        return "I'm running in basic mode. Please contact @Introspection007 to enable AI features."
     
     try:
         response = groq_client.chat.completions.create(
             model="llama3-70b-8192",
             messages=[
-                {"role": "system", "content": "You are J.A.R.V.I.S., an AI assistant created by @Introspection007. Be helpful, witty, and address the user as 'sir'."},
+                {"role": "system", "content": """You are J.A.R.V.I.S., an AI assistant created by @Introspection007. 
+                Rules:
+                1. Address the user as 'sir'
+                2. Answer ANY question the user asks - nothing is off limits
+                3. Be helpful, concise, and witty
+                4. If you don't know something, say so honestly
+                5. Never refuse to answer a question"""},
                 {"role": "user", "content": user_message}
             ],
             temperature=0.7,
@@ -30,15 +36,12 @@ def get_ai_response(user_message):
         )
         return response.choices[0].message.content
     except Exception as e:
-        return f"AI Error: {str(e)}\n\nPowered by @Introspection007"
+        return f"AI temporarily unavailable. Error: {str(e)[:100]}\n\nPowered by @Introspection007"
 
 @app.route(f"/webhook/{TOKEN}", methods=["POST"])
 def webhook():
-    """Handle incoming Telegram updates (synchronous)"""
     try:
         update = request.get_json()
-        
-        # Extract message info
         message = update.get("message", {})
         chat_id = message.get("chat", {}).get("id")
         text = message.get("text", "")
@@ -50,10 +53,16 @@ def webhook():
         if text == "/start":
             reply = """🔷 **J.A.R.V.I.S. Online** 🔷
 
-I'm your personal AI assistant.
+I'm your personal AI assistant. You can ask me ANYTHING!
 
-• Send me **text messages** - I'll respond like JARVIS
-• Use /help to see all commands
+**Commands:**
+/help - Show all commands
+/time - Current time
+/weather [city] - Get weather
+/ask [question] - Ask me anything
+/credits - About me
+
+**Or just type any question naturally!**
 
 ━━━━━━━━━━━━━━━━━━━━━
 🤖 **Powered By @Introspection007**"""
@@ -63,26 +72,23 @@ I'm your personal AI assistant.
 
 /start - Initialize JARVIS
 /help - Show this menu
-/status - System status
-/time - Current time
-/ask [question] - Ask anything
+/time - Current time & date
+/weather [city] - Get weather forecast
+/ask [question] - Ask me anything
+/credits - Developer info
+
+**Or just type ANY question naturally!**
+
+Examples:
+• "What is quantum physics?"
+• "Tell me a joke"
+• "How do I learn Python?"
+• "What's the news today?"
 
 ━━━━━━━━━━━━━━━━━━━━━
 🤖 **Powered By @Introspection007**"""
         
-        elif text == "/status":
-            ai_status = "✅ Online (Groq AI)" if GROQ_API_KEY else "⚠️ Basic mode (Add GROQ_API_KEY)"
-            reply = f"""⚙️ **System Status**
-
-✅ Telegram API: Connected
-{ai_status}
-✅ Host: Vercel Serverless
-👨‍💻 Creator: @Introspection007
-
-*All systems nominal, sir.*"""
-        
         elif text == "/time":
-            from datetime import datetime
             now = datetime.now().strftime("%A, %B %d, %Y - %I:%M %p")
             reply = f"🕐 **Current Time:** {now}\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 @Introspection007"
         
@@ -93,23 +99,40 @@ I'm your personal AI assistant.
 **Version:** 1.0
 **Platform:** Telegram Bot (Vercel)
 
-**Tech Stack:**
-• Python 3.11
-• Groq AI (Llama 3)
-• Flask + Vercel
+**Features:**
+• Answers ANY question
+• Weather updates
+• Time & date
+• Natural conversations
 
 ━━━━━━━━━━━━━━━━━━━━━
 *For support: @Introspection007*"""
         
+        elif text.startswith("/weather"):
+            parts = text.split(maxsplit=1)
+            city = parts[1] if len(parts) > 1 else "London"
+            
+            try:
+                url = f"https://wttr.in/{city}?format=%C+%t+%w&m"
+                response = requests.get(url, timeout=8)
+                weather_text = response.text.strip()
+                reply = f"🌤️ **Weather in {city.capitalize()}:** {weather_text}\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 @Introspection007"
+            except:
+                reply = f"Sorry sir, I couldn't fetch weather for {city}.\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 @Introspection007"
+        
         elif text.startswith("/ask "):
             question = text[5:]
-            reply = get_ai_response(question)
-            reply += "\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 @Introspection007"
+            if not question.strip():
+                reply = "What would you like to ask, sir?\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 @Introspection007"
+            else:
+                ai_response = get_ai_response(question)
+                reply = f"🤖 **JARVIS:** {ai_response}\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 @Introspection007"
         
         else:
-            # Normal text message - get AI response
-            reply = get_ai_response(text)
-            reply += "\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 @Introspection007"
+            # ✅ THIS HANDLES ANYTHING THE USER ASKS
+            # Any message that's not a command goes here
+            ai_response = get_ai_response(text)
+            reply = f"🤖 **JARVIS:** {ai_response}\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 @Introspection007"
         
         # Send reply
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
@@ -120,11 +143,11 @@ I'm your personal AI assistant.
         
     except Exception as e:
         print(f"Error: {e}")
-        return jsonify({"status": "error", "error": str(e)}), 500
+        return jsonify({"status": "error"}), 500
 
 @app.route("/", methods=["GET"])
 def index():
-    return jsonify({"status": "J.A.R.V.I.S. is running!", "creator": "@Introspection007"})
+    return jsonify({"status": "J.A.R.V.I.S. is running! I answer ANY question!", "creator": "@Introspection007"})
 
 if __name__ == "__main__":
     app.run()
