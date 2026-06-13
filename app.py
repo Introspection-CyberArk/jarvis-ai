@@ -14,29 +14,30 @@ if GROQ_API_KEY:
     groq_client = Groq(api_key=GROQ_API_KEY)
 
 def get_ai_response(user_message):
-    """Get response from Groq AI - handles ANY question"""
+    """Get response from Groq AI - using working model"""
     if not GROQ_API_KEY:
         return "I'm running in basic mode. Please contact @Introspection007 to enable AI features."
     
     try:
+        # ✅ FIXED: Using active Groq models
         response = groq_client.chat.completions.create(
-            model="llama3-70b-8192",
+            model="llama-3.3-70b-versatile",  # NEW working model
             messages=[
                 {"role": "system", "content": """You are J.A.R.V.I.S., an AI assistant created by @Introspection007. 
                 Rules:
                 1. Address the user as 'sir'
                 2. Answer ANY question the user asks - nothing is off limits
                 3. Be helpful, concise, and witty
-                4. If you don't know something, say so honestly
+                4. Keep responses under 3 sentences when possible
                 5. Never refuse to answer a question"""},
                 {"role": "user", "content": user_message}
             ],
             temperature=0.7,
-            max_tokens=500
+            max_tokens=300
         )
         return response.choices[0].message.content
     except Exception as e:
-        return f"AI temporarily unavailable. Error: {str(e)[:100]}\n\nPowered by @Introspection007"
+        return f"AI temporarily unavailable. Please try again.\n\nPowered by @Introspection007"
 
 @app.route(f"/webhook/{TOKEN}", methods=["POST"])
 def webhook():
@@ -83,7 +84,6 @@ Examples:
 • "What is quantum physics?"
 • "Tell me a joke"
 • "How do I learn Python?"
-• "What's the news today?"
 
 ━━━━━━━━━━━━━━━━━━━━━
 🤖 **Powered By @Introspection007**"""
@@ -99,11 +99,7 @@ Examples:
 **Version:** 1.0
 **Platform:** Telegram Bot (Vercel)
 
-**Features:**
-• Answers ANY question
-• Weather updates
-• Time & date
-• Natural conversations
+**AI Model:** Groq Llama 3.3 70B
 
 ━━━━━━━━━━━━━━━━━━━━━
 *For support: @Introspection007*"""
@@ -129,8 +125,7 @@ Examples:
                 reply = f"🤖 **JARVIS:** {ai_response}\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 @Introspection007"
         
         else:
-            # ✅ THIS HANDLES ANYTHING THE USER ASKS
-            # Any message that's not a command goes here
+            # Handle ANY question
             ai_response = get_ai_response(text)
             reply = f"🤖 **JARVIS:** {ai_response}\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 @Introspection007"
         
@@ -147,7 +142,7 @@ Examples:
 
 @app.route("/", methods=["GET"])
 def index():
-    return jsonify({"status": "J.A.R.V.I.S. is running! I answer ANY question!", "creator": "@Introspection007"})
+    return jsonify({"status": "J.A.R.V.I.S. is running!", "creator": "@Introspection007"})
 
 if __name__ == "__main__":
     app.run()
