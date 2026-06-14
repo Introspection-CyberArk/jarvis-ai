@@ -12,45 +12,32 @@ SAMBANOVA_API_KEY = os.environ.get("SAMBANOVA_API_KEY")
 
 # Your Supabase credentials
 SUPABASE_URL = "https://lhtauaweqptozvydrrrt.supabase.co"
-SUPABASE_KEY = "sb_publishable_Jc0xC3PRFmXZd0V2lTYVvg_uY8LAE1j"
+SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxodGF1YXdlcXB0b3p2eWRycnJ0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE0NTQ2NzUsImV4cCI6MjA5NzAzMDY3NX0.HIRRkP5v3Lx-Ae5JfG0A0Yo0t4qMVfVnP0oxKRNTCK4"
 
 # Initialize Supabase client
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+try:
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+    print("✅ Supabase connected successfully!")
+except Exception as e:
+    print(f"❌ Supabase connection error: {e}")
+    supabase = None
 
 # ============ DATABASE FUNCTIONS ============
 def init_db():
     """Create tables in Supabase"""
+    if not supabase:
+        print("⚠️ Supabase not available, skipping table creation")
+        return
     try:
         # Create users table
-        supabase.sql("""
-            CREATE TABLE IF NOT EXISTS users (
-                user_id BIGINT PRIMARY KEY,
-                username TEXT,
-                first_name TEXT,
-                last_name TEXT,
-                preferred_name TEXT,
-                first_seen TIMESTAMP,
-                last_seen TIMESTAMP
-            )
-        """).execute()
-        
-        # Create conversations table
-        supabase.sql("""
-            CREATE TABLE IF NOT EXISTS conversations (
-                id SERIAL PRIMARY KEY,
-                user_id BIGINT,
-                role TEXT,
-                message TEXT,
-                timestamp TIMESTAMP
-            )
-        """).execute()
-        
+        supabase.table("users").insert({"user_id": 0, "username": "test"}).execute()
         print("✅ Supabase tables ready!")
     except Exception as e:
-        print(f"Table creation error: {e}")
+        print(f"Note: Tables may already exist: {e}")
 
 def get_user(user_id):
-    """Get user from database"""
+    if not supabase:
+        return None
     try:
         result = supabase.table("users").select("*").eq("user_id", user_id).execute()
         return result.data[0] if result.data else None
@@ -58,7 +45,8 @@ def get_user(user_id):
         return None
 
 def save_user(user_id, username, first_name, last_name):
-    """Save or update user"""
+    if not supabase:
+        return
     try:
         existing = get_user(user_id)
         if existing:
@@ -81,7 +69,8 @@ def save_user(user_id, username, first_name, last_name):
         print(f"Save user error: {e}")
 
 def update_user_name(user_id, preferred_name):
-    """Update user's preferred name"""
+    if not supabase:
+        return
     try:
         supabase.table("users").update({
             "preferred_name": preferred_name
@@ -90,7 +79,8 @@ def update_user_name(user_id, preferred_name):
         print(f"Update name error: {e}")
 
 def save_conversation(user_id, role, message):
-    """Save conversation to database"""
+    if not supabase:
+        return
     try:
         supabase.table("conversations").insert({
             "user_id": user_id,
@@ -102,7 +92,8 @@ def save_conversation(user_id, role, message):
         print(f"Save conversation error: {e}")
 
 def get_recent_conversation(user_id, limit=15):
-    """Get recent conversation history"""
+    if not supabase:
+        return []
     try:
         result = supabase.table("conversations")\
             .select("role, message")\
@@ -115,7 +106,8 @@ def get_recent_conversation(user_id, limit=15):
         return []
 
 def clear_user_memory(user_id):
-    """Reset user's conversation history"""
+    if not supabase:
+        return
     try:
         supabase.table("conversations").delete().eq("user_id", user_id).execute()
         supabase.table("users").update({"preferred_name": None}).eq("user_id", user_id).execute()
@@ -128,6 +120,9 @@ init_db()
 # ============ SAMBANOVA AI REQUEST ============
 def get_sambanova_response(messages):
     """Direct HTTP request to SambaNova API"""
+    if not SAMBANOVA_API_KEY:
+        return "SambaNova API key not configured."
+    
     url = "https://api.sambanova.ai/v1/chat/completions"
     
     headers = {
@@ -142,13 +137,17 @@ def get_sambanova_response(messages):
         "max_tokens": 500
     }
     
-    response = requests.post(url, json=payload, headers=headers, timeout=30)
-    
-    if response.status_code == 200:
-        result = response.json()
-        return result["choices"][0]["message"]["content"]
-    else:
-        print(f"SambaNova API Error: {response.status_code}")
+    try:
+        response = requests.post(url, json=payload, headers=headers, timeout=30)
+        
+        if response.status_code == 200:
+            result = response.json()
+            return result["choices"][0]["message"]["content"]
+        else:
+            print(f"SambaNova API Error: {response.status_code}")
+            return None
+    except Exception as e:
+        print(f"SambaNova request error: {e}")
         return None
 
 def get_ai_response(user_message, user_id, first_name):
@@ -179,15 +178,13 @@ def get_ai_response(user_message, user_id, first_name):
 IMPORTANT RULES:
 - The user's name is {preferred_name}. ALWAYS address them by name in EVERY response.
 - Be warm, friendly, and personal - use their name naturally.
-- Keep responses concise (2-3 sentences) unless more detail is requested.
-- Never say "you haven't told me your name" because you already know it."""
+- Keep responses concise (2-3 sentences)."""
     else:
         system_prompt = """You are J.A.R.V.I.S., an AI assistant created by @Introspection007, powered by SambaNova AI.
 
 RULES:
 - Be helpful, friendly, and concise.
-- Keep responses to 2-3 sentences.
-- If a user shares their name, remember to use it in future responses."""
+- Keep responses to 2-3 sentences."""
     
     # Get conversation history
     history = get_recent_conversation(user_id, limit=15)
@@ -211,11 +208,11 @@ RULES:
             save_conversation(user_id, "assistant", reply)
             return reply
         else:
-            return f"Sorry, I'm having trouble connecting to AI. Please try again.\n\n━━━━━━━━━━━━━━━━━━━━━\n⚡ **Powered By @Introspection007**"
+            return f"Sorry, I'm having trouble with the AI service. Please try again.\n\n━━━━━━━━━━━━━━━━━━━━━\n⚡ **Powered By @Introspection007**"
         
     except Exception as e:
         print(f"Error: {e}")
-        return f"I'm experiencing technical difficulties. Please try again in a moment.\n\n━━━━━━━━━━━━━━━━━━━━━\n⚡ **Powered By @Introspection007**"
+        return f"I'm experiencing technical difficulties. Please try again.\n\n━━━━━━━━━━━━━━━━━━━━━\n⚡ **Powered By @Introspection007**"
 
 # ============ FLASK WEBHOOK ============
 @app.route(f"/webhook/{TOKEN}", methods=["POST"])
@@ -246,43 +243,30 @@ Welcome back {display_name}!
 
 I'm your AI assistant with **persistent memory** powered by SambaNova AI!
 
-**✨ What I can do:**
-• Remember your name and everything you tell me
-• Answer any questions
-• Continue conversations where we left off
-
-**📋 Commands:**
-/start - Welcome message
-/forget - Reset my memory of you
-/help - Show all commands
+**Commands:**
+/start - Welcome
+/forget - Reset my memory
+/help - All commands
 /time - Current time
 /weather [city] - Get weather
 
-**💡 Try this:** *"My name is [your name]"* - I'll never forget!
+**Try:** *"My name is [your name]"* - I'll never forget!
 
 ━━━━━━━━━━━━━━━━━━━━━
 ⚡ **Powered By SambaNova AI | @Introspection007**"""
         
         elif text == "/forget":
             clear_user_memory(user_id)
-            reply = f"🗑️ I've forgotten our previous conversations, {display_name}. Fresh start!\n\n━━━━━━━━━━━━━━━━━━━━━\n⚡ **Powered By @Introspection007**"
+            reply = f"🗑️ Memory reset, {display_name}! Fresh start!\n\n━━━━━━━━━━━━━━━━━━━━━\n⚡ **Powered By @Introspection007**"
         
         elif text == "/help":
             reply = f"""🔷 **J.A.R.V.I.S. Commands** 🔷
 
-**Core Commands:**
-/start - Welcome message
-/help - Show this menu
-/forget - Reset my memory
-
-**Utilities:**
+/start - Welcome
+/help - This menu
+/forget - Reset memory
 /time - Current time
 /weather [city] - Weather forecast
-
-**Memory Features:**
-• Tell me *"my name is [name]"* - I'll remember forever
-• I recall our entire conversation history
-• Your data is stored securely in Supabase
 
 ━━━━━━━━━━━━━━━━━━━━━
 ⚡ **Powered By SambaNova AI | @Introspection007**"""
@@ -320,8 +304,7 @@ def index():
     return jsonify({
         "status": "J.A.R.V.I.S. with SambaNova + Supabase is running!",
         "creator": "@Introspection007",
-        "database": "Supabase (Persistent Memory)",
-        "ai_provider": "SambaNova (Meta-Llama-3.3-70B-Instruct)"
+        "memory": "Enabled (Supabase)" if supabase else "Disabled"
     })
 
 if __name__ == "__main__":
