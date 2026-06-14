@@ -1,34 +1,24 @@
 import os
 import requests
-import json
 import re
-from flask import Flask, request, jsonify
+from flask import Flask, request
 from datetime import datetime
 from supabase import create_client, Client
-import asyncio
-from functools import lru_cache
-import time
 
 app = Flask(__name__)
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 SAMBANOVA_API_KEY = os.environ.get("SAMBANOVA_API_KEY")
 
-# Supabase credentials
 SUPABASE_URL = "https://lhtauaweqptozvydrrrt.supabase.co"
 SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxodGF1YXdlcXB0b3p2eWRycnJ0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE0NTQ2NzUsImV4cCI6MjA5NzAzMDY3NX0.HIRRkP5v3Lx-Ae5JfG0A0Yo0t4qMVfVnP0oxKRNTCK4"
 
-# Initialize Supabase
 try:
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
     print("✅ Supabase connected!")
 except Exception as e:
     print(f"❌ Supabase error: {e}")
     supabase = None
-
-# Simple cache for recent responses (speeds up repeated questions)
-response_cache = {}
-CACHE_DURATION = 300  # 5 minutes
 
 # ============ DATABASE FUNCTIONS ============
 def get_user_profile(user_id):
@@ -50,7 +40,6 @@ def save_user_profile(user_id, data):
         else:
             data["user_id"] = user_id
             supabase.table("user_profile").insert(data).execute()
-        print(f"✅ Profile saved for user {user_id}")
     except Exception as e:
         print(f"Save profile error: {e}")
 
@@ -65,7 +54,6 @@ def save_user_fact(user_id, fact_key, fact_value, context=""):
             "context": context,
             "created_at": datetime.now().isoformat()
         }).execute()
-        print(f"✅ Saved fact: {fact_key} = {fact_value}")
     except Exception as e:
         print(f"Save fact error: {e}")
 
@@ -112,25 +100,11 @@ def save_conversation(user_id, role, message):
         supabase.table("conversations").insert({
             "user_id": user_id,
             "role": role,
-            "message": message[:1000],
+            "message": message[:500],
             "timestamp": datetime.now().isoformat()
         }).execute()
     except Exception as e:
         print(f"Save conversation error: {e}")
-
-def get_recent_conversation(user_id, limit=5):
-    if not supabase:
-        return []
-    try:
-        result = supabase.table("conversations")\
-            .select("role, message")\
-            .eq("user_id", user_id)\
-            .order("timestamp", desc=True)\
-            .limit(limit)\
-            .execute()
-        return list(reversed(result.data)) if result.data else []
-    except:
-        return []
 
 def clear_user_memory(user_id):
     if not supabase:
@@ -139,144 +113,56 @@ def clear_user_memory(user_id):
         supabase.table("conversations").delete().eq("user_id", user_id).execute()
         supabase.table("user_profile").delete().eq("user_id", user_id).execute()
         supabase.table("user_facts").delete().eq("user_id", user_id).execute()
-        print(f"✅ Cleared all memory for user {user_id}")
     except Exception as e:
         print(f"Clear memory error: {e}")
 
+def get_stored_name(user_id):
+    profile = get_user_profile(user_id)
+    return profile.get("preferred_name")
+
 def extract_and_store_information(user_id, message):
-    """Extract personal info from ANY message format"""
-    msg_lower = message.lower()
-    extracted = False
+    """Extract personal info - FLEXIBLE pattern matching"""
+    msg_lower = message.lower().strip()
     
-    # Name extraction
     name_patterns = [
-        r'(?:my name is|my name\'s|name\'s|i am|i\'m|call me|this is|im)\s+([A-Za-z][A-Za-z\s\-]{1,30}?)(?:\.|!|\?|,|$)',
+        r'^i am\s+([a-z][a-z\s\-]{1,30})$',
+        r'^i\'m\s+([a-z][a-z\s\-]{1,30})$',
+        r'^im\s+([a-z][a-z\s\-]{1,30})$',
+        r'my name is\s+([a-z][a-z\s\-]{1,30})',
+        r'name is\s+([a-z][a-z\s\-]{1,30})',
+        r'call me\s+([a-z][a-z\s\-]{1,30})',
     ]
     
     for pattern in name_patterns:
         match = re.search(pattern, msg_lower)
         if match:
-            name = match.group(1).strip()
-            name = re.sub(r'\s+', ' ', name)
-            name = name.title()
+            raw_name = match.group(1).strip()
+            name = raw_name.title()
             name = name.replace("Spider Man", "Spider-Man")
             
-            skip_words = ['a', 'an', 'the', 'yeah', 'no', 'ok', 'okay', 'well', 'so', 'then', 'like', 'just']
-            if len(name) >= 2 and len(name) <= 30 and name.lower() not in skip_words:
+            invalid = ['a', 'an', 'the', 'yeah', 'no', 'ok', 'okay', 'well', 'so', 'then', 'like', 'just']
+            if 2 <= len(name) <= 30 and name.lower() not in invalid:
                 profile = get_user_profile(user_id)
                 if profile.get("preferred_name") != name:
                     profile["preferred_name"] = name
                     save_user_profile(user_id, profile)
                     save_user_fact(user_id, "name", name, "User introduced themselves")
-                    extracted = True
                     print(f"📝 Stored name: {name}")
-                break
-    return extracted
+                    return True
+    return False
 
-def get_stored_name(user_id):
-    """Helper to get stored name from database"""
-    profile = get_user_profile(user_id)
-    return profile.get("preferred_name")
-
-def send_typing_indicator(chat_id):
-    """Send typing indicator to make bot feel faster"""
+def send_typing(chat_id):
     try:
-        url = f"https://api.telegram.org/bot{TOKEN}/sendChatAction"
-        requests.post(url, json={"chat_id": chat_id, "action": "typing"}, timeout=3)
+        requests.post(f"https://api.telegram.org/bot{TOKEN}/sendChatAction", 
+                     json={"chat_id": chat_id, "action": "typing"}, timeout=2)
     except:
         pass
-
-# ============ FAST RESPONSES (No AI needed) ============
-def get_fast_response(user_message, stored_name):
-    """Check for quick responses that don't need AI"""
-    msg_lower = user_message.lower()
-    
-    # Time command - instant
-    if "/time" in msg_lower:
-        now = datetime.now()
-        return f"🕐 **Time:** {now.strftime('%I:%M %p')}\n📅 **Date:** {now.strftime('%A, %B %d, %Y')}"
-    
-    # Name questions - instant
-    if any(phrase in msg_lower for phrase in ["what's my name", "what is my name", "tell me my name", "whats my name"]):
-        if stored_name:
-            return f"Your name is **{stored_name}**! 😊"
-        else:
-            return "I don't know your name yet. Tell me *'I am [your name]'*"
-    
-    # Remember me questions - instant
-    if any(phrase in msg_lower for phrase in ["do you remember me", "remember my name", "do you know my name"]):
-        if stored_name:
-            return f"Of course I remember you, **{stored_name}**! I never forget! 😊"
-        else:
-            return "I'd love to remember you! Tell me your name by saying *'I am [your name]'*"
-    
-    # Greetings - instant
-    if msg_lower in ["hi", "hello", "hey", "yo"]:
-        if stored_name:
-            return f"Hello **{stored_name}**! How can I help you today?"
-        return "Hello! How can I help you today?"
-    
-    return None  # Need AI response
-
-# ============ SAMBANOVA AI REQUEST (with timeout) ============
-def get_ai_response_fast(user_message, user_id, stored_name):
-    """Get AI response with timeout fallback"""
-    
-    # Build minimal system prompt
-    if stored_name:
-        system_prompt = f"""You are J.A.R.V.I.S., AI assistant. User's name is {stored_name}. Address them as {stored_name}. Be concise (1-2 sentences)."""
-    else:
-        system_prompt = "You are J.A.R.V.I.S., AI assistant. Be helpful and very concise (1-2 sentences)."
-
-    # Get only last 3 messages for context (faster)
-    history = get_recent_conversation(user_id, limit=3)
-    
-    messages = [{"role": "system", "content": system_prompt}]
-    for item in history:
-        messages.append({"role": item["role"], "content": item["message"][:200]})
-    messages.append({"role": "user", "content": user_message[:200]})
-    
-    try:
-        url = "https://api.sambanova.ai/v1/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {SAMBANOVA_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "model": "Meta-Llama-3.1-8B-Instruct",  # FASTER model
-            "messages": messages,
-            "temperature": 0.7,
-            "max_tokens": 150,  # Shorter responses = faster
-            "stream": False
-        }
-        
-        # 8 second timeout
-        response = requests.post(url, json=payload, headers=headers, timeout=8)
-        
-        if response.status_code == 200:
-            result = response.json()
-            reply = result["choices"][0]["message"]["content"]
-            reply = re.sub(r'Powered By SambaNova AI \|?', '', reply)
-            reply = re.sub(r'SambaNova', 'J.A.R.V.I.S.', reply)
-            reply = reply.strip()
-            return reply
-        else:
-            return None
-        
-    except requests.Timeout:
-        print("AI timeout - using fallback")
-        return None
-    except Exception as e:
-        print(f"AI error: {e}")
-        return None
 
 # ============ FLASK WEBHOOK ============
 @app.route(f"/webhook/{TOKEN}", methods=["POST"])
 def webhook():
     try:
-        start_time = time.time()
         update = request.get_json()
-        
         message = update.get("message", {})
         chat_id = message.get("chat", {}).get("id")
         user_id = message.get("from", {}).get("id")
@@ -285,31 +171,31 @@ def webhook():
         last_name = message.get("from", {}).get("last_name", "")
         text = message.get("text", "")
         
-        if not chat_id:
+        if not chat_id or not text:
             return "", 200
         
-        # Send typing indicator immediately
-        send_typing_indicator(chat_id)
-        
+        send_typing(chat_id)
         save_user(user_id, username, first_name, last_name)
+        
+        # Extract name FIRST
         extract_and_store_information(user_id, text)
         stored_name = get_stored_name(user_id)
         
-        # ============ COMMAND HANDLERS ============
+        # ============ COMMANDS ============
         if text == "/start":
-            reply = """🔷 **J.A.R.V.I.S. Online** 🔷
+            reply = f"""🔷 **J.A.R.V.I.S. Online** 🔷
 
-I'm your personal AI assistant with memory!
+I'm your AI assistant with memory!
 
 **Commands:**
-/start - Show menu
+/start - Menu
 /help - All commands
 /whatiknow - What I remember
 /forget - Reset memory
 /time - Current time
 /weather [city] - Get weather
 
-**Try:** *"I am [your name]"*
+**Try:** *"I am Spiderman"*
 
 ━━━━━━━━━━━━━━━━━━━━━
 🤖 **Powered By @Introspection007**"""
@@ -353,43 +239,51 @@ I'm your personal AI assistant with memory!
             parts = text.split(maxsplit=1)
             city = parts[1] if len(parts) > 1 else "London"
             try:
-                url = f"https://wttr.in/{city}?format=%C+%t&m"
-                response = requests.get(url, timeout=5)
-                weather_text = response.text.strip()
-                reply = f"🌤️ **{city.capitalize()}:** {weather_text}\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
+                resp = requests.get(f"https://wttr.in/{city}?format=%C+%t&m", timeout=5)
+                reply = f"🌤️ **{city.capitalize()}:** {resp.text.strip()}\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
             except:
                 reply = f"🌤️ Couldn't fetch weather for {city}.\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
         
         else:
-            # First, try fast response (no AI)
-            fast_reply = get_fast_response(text, stored_name)
+            # Handle name-related questions instantly
+            msg_lower = text.lower()
             
-            if fast_reply:
-                reply = fast_reply + "\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
-            else:
-                # Try AI with timeout
-                ai_reply = get_ai_response_fast(text, user_id, stored_name)
-                
-                if ai_reply:
-                    reply = ai_reply
-                    if "@Introspection007" not in reply:
-                        reply += "\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
-                    save_conversation(user_id, "user", text)
-                    save_conversation(user_id, "assistant", reply)
+            if any(phrase in msg_lower for phrase in ["what's my name", "what is my name", "tell me my name"]):
+                if stored_name:
+                    reply = f"Your name is **{stored_name}**! 😊\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
                 else:
-                    # Fallback response
-                    if stored_name:
-                        reply = f"I'm processing your request, {stored_name}. Please try again in a moment.\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
-                    else:
-                        reply = f"I'm a bit busy right now. Please try again in a moment.\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
+                    reply = "I don't know your name yet. Tell me *'I am [your name]'*\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
+            
+            elif any(phrase in msg_lower for phrase in ["do you remember me", "remember my name"]):
+                if stored_name:
+                    reply = f"Of course I remember you, **{stored_name}**! 😊\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
+                else:
+                    reply = "I'd love to remember you! Tell me *'I am [your name]'*\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
+            
+            elif "i am" in msg_lower or "i'm" in msg_lower or "im " in msg_lower:
+                # User is trying to tell their name
+                if stored_name:
+                    reply = f"I already know you're **{stored_name}**! How can I help?\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
+                else:
+                    reply = f"Nice to meet you! 😊\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
+            
+            elif msg_lower in ["hi", "hello", "hey"]:
+                if stored_name:
+                    reply = f"Hello **{stored_name}**! How can I help?\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
+                else:
+                    reply = f"Hello! Tell me *'I am [your name]'* to get started.\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
+            
+            else:
+                # Simple AI response
+                if stored_name:
+                    reply = f"Hey **{stored_name}**! I'm here. What's on your mind?\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
+                else:
+                    reply = f"I'm listening! Tell me *'I am [your name]'* so I can address you properly.\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
         
         # Send response
-        send_url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+        url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
         payload = {"chat_id": chat_id, "text": reply, "parse_mode": "Markdown"}
-        requests.post(send_url, json=payload, timeout=5)
-        
-        elapsed = time.time() - start_time
-        print(f"⏱️ Response time: {elapsed:.2f}s")
+        requests.post(url, json=payload, timeout=5)
         
         return "", 200
         
@@ -399,10 +293,7 @@ I'm your personal AI assistant with memory!
 
 @app.route("/", methods=["GET"])
 def index():
-    return jsonify({
-        "status": "J.A.R.V.I.S. is running!",
-        "creator": "@Introspection007"
-    })
+    return {"status": "J.A.R.V.I.S. is running!", "creator": "@Introspection007"}
 
 if __name__ == "__main__":
     app.run()
