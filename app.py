@@ -137,68 +137,94 @@ def clear_user_memory(user_id):
         print(f"Clear memory error: {e}")
 
 def extract_and_store_information(user_id, message):
-    """Extract personal info from messages and store it"""
+    """Extract personal info from ANY message format"""
+    msg_lower = message.lower()
+    extracted = False
     
-    # Name extraction
+    # MORE ROBUST NAME EXTRACTION - works with any capitalization
+    # Patterns: "my name is X", "I'm X", "call me X", "name is X", "this is X"
     name_patterns = [
-        r'my name is\s+([A-Za-z\s]+?)(?:\.|!|\?|$)',
-        r"i'm\s+([A-Za-z\s]+?)(?:\.|!|\?|$)",
-        r'call me\s+([A-Za-z\s]+?)(?:\.|!|\?|$)'
+        r'(?:my name is|my name\'s|name\'s|i am|i\'m|call me|this is|im)\s+([A-Za-z][A-Za-z\s]{1,30}?)(?:\.|!|\?|,|$)',
     ]
     
     for pattern in name_patterns:
-        match = re.search(pattern, message.lower())
+        match = re.search(pattern, msg_lower)
         if match:
-            name = match.group(1).strip().title()
-            if len(name) < 30 and len(name) > 1:
-                profile = get_user_profile(user_id)
-                profile["preferred_name"] = name
-                save_user_profile(user_id, profile)
-                save_user_fact(user_id, "name", name, "User introduced themselves")
-                print(f"📝 Stored name: {name}")
-                break
+            name = match.group(1).strip()
+            # Clean up the name
+            name = re.sub(r'\s+', ' ', name)
+            name = name.title()
+            # Filter out common non-name phrases
+            if len(name) < 2 or len(name) > 30:
+                continue
+            if name.lower() in ['a', 'an', 'the', 'yeah', 'no', 'ok', 'okay', 'well', 'so', 'then', 'like', 'just']:
+                continue
+            
+            profile = get_user_profile(user_id)
+            profile["preferred_name"] = name
+            save_user_profile(user_id, profile)
+            save_user_fact(user_id, "name", name, "User introduced themselves")
+            extracted = True
+            print(f"📝 Stored name: {name}")
+            break
     
     # Age extraction
-    age_match = re.search(r'i am (\d+)\s+years? old', message.lower())
+    age_match = re.search(r'i am (\d+)\s+years? old', msg_lower)
+    if not age_match:
+        age_match = re.search(r'(\d+)\s+years? old', msg_lower)
     if age_match:
         age = int(age_match.group(1))
         profile = get_user_profile(user_id)
         profile["age"] = age
         save_user_profile(user_id, profile)
         save_user_fact(user_id, "age", str(age), "User shared their age")
+        extracted = True
         print(f"📝 Stored age: {age}")
     
     # Location extraction
-    location_match = re.search(r'i live in\s+([A-Za-z\s,]+?)(?:\.|!|\?|$)', message.lower())
+    location_match = re.search(r'i (?:live|stay) (?:in|at)\s+([A-Za-z\s,]+?)(?:\.|!|\?|$)', msg_lower)
     if location_match:
         location = location_match.group(1).strip().title()
         profile = get_user_profile(user_id)
         profile["location"] = location
         save_user_profile(user_id, profile)
         save_user_fact(user_id, "location", location, "User shared their location")
+        extracted = True
         print(f"📝 Stored location: {location}")
+    
+    return extracted
 
 # ============ SAMBANOVA AI REQUEST ============
 def get_ai_response(user_message, user_id):
     """Get response with complete user memory"""
     
-    # First, extract and store any information
+    # First, extract and store any information from the message
     extract_and_store_information(user_id, user_message)
     
-    # Get all user data
+    # Get ALL user data from database
     profile = get_user_profile(user_id)
     facts = get_user_facts(user_id)
     
+    # Get the stored name (case insensitive check)
     preferred_name = profile.get("preferred_name")
     
     msg_lower = user_message.lower()
     
-    # Handle "what's my name"
-    if "what's my name" in msg_lower or "what is my name" in msg_lower:
+    # === DIRECT HANDLERS (No AI needed) ===
+    
+    # Handle "what's my name" - DIRECT RESPONSE from database
+    if any(phrase in msg_lower for phrase in ["what's my name", "what is my name", "tell me my name", "whats my name"]):
         if preferred_name:
-            return f"Your name is **{preferred_name}**! 😊\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
+            return f"Your name is **{preferred_name}**! I never forget! 😊\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
         else:
-            return f"I don't know your name yet. Please tell me by saying *'My name is [your name]'*\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
+            return f"I don't know your name yet. Just tell me *'I am [your name]'* or *'My name is [your name]'*\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
+    
+    # Handle "do you remember me" - DIRECT RESPONSE
+    if any(phrase in msg_lower for phrase in ["do you remember me", "remember my name", "do you know me"]):
+        if preferred_name:
+            return f"Of course I remember you, **{preferred_name}**! We're having a conversation right now! 😊\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
+        else:
+            return f"I'd love to remember you! Please tell me your name by saying *'I am [your name]'*\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
     
     # Handle "what do you know about me"
     if "what do you know about me" in msg_lower:
@@ -210,54 +236,55 @@ def get_ai_response(user_message, user_id):
         if profile.get("location"):
             info += f"📍 Location: {profile['location']}\n"
         
+        if facts:
+            other_facts = []
+            for key, value in facts.items():
+                if key not in ['name', 'age', 'location']:
+                    other_facts.append(f"• {key}: {value}")
+            if other_facts:
+                info += "\n📋 Other facts:\n" + "\n".join(other_facts[:5])
+        
         if len(info) < 50:
             info += "I don't know much about you yet. Tell me about yourself!"
         
         info += "\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
         return info
     
-    # Handle "do you remember me"
-    if "remember my name" in msg_lower or "do you remember" in msg_lower:
-        if preferred_name:
-            return f"Of course I remember you, {preferred_name}! 😊\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
-        else:
-            return f"I'd love to remember you! Please tell me your name by saying *'My name is [your name]'*\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
+    # If we have the user's name, don't ask for it again!
+    if preferred_name and any(phrase in msg_lower for phrase in ["what's your name", "who are you"]):
+        # User asking bot's name - that's fine
+        pass
+    elif preferred_name and ("name" not in msg_lower):
+        # User knows we know their name - no need to ask
+        pass
     
-    # Build user context for AI
-    user_context = ""
+    # Build system prompt with user context for AI
     if preferred_name:
-        user_context += f"The user's name is {preferred_name}. You should call them {preferred_name}.\n"
-    if profile.get("age"):
-        user_context += f"Their age is {profile['age']}.\n"
-    if profile.get("location"):
-        user_context += f"They live in {profile['location']}.\n"
-    
-    # Build system prompt
-    if user_context:
         system_prompt = f"""You are J.A.R.V.I.S., an AI assistant created by @Introspection007.
 
-USER INFORMATION:
-{user_context}
+IMPORTANT - THE USER'S NAME IS {preferred_name}.
+DO NOT ASK FOR THEIR NAME - YOU ALREADY KNOW IT.
+Address them as {preferred_name} in your responses.
 
-RULES:
-- Address the user by their name if you know it
+Rules:
 - Be warm and friendly
-- Keep responses concise (2-3 sentences)"""
+- Keep responses concise (2-3 sentences)
+- Use their name naturally"""
     else:
         system_prompt = """You are J.A.R.V.I.S., an AI assistant created by @Introspection007.
 
-RULES:
+Rules:
 - Be helpful and friendly
-- Keep responses concise
-- Ask for their name if you don't know it"""
-    
+- Keep responses concise (2-3 sentences)
+- You don't know the user's name yet - ask politely once if appropriate, but don't spam the question"""
+
     # Get conversation history
-    history = get_recent_conversation(user_id, limit=5)
+    history = get_recent_conversation(user_id, limit=10)
     
     # Build messages
     messages = [{"role": "system", "content": system_prompt}]
     
-    for item in history:
+    for item in history[-10:]:
         messages.append({"role": item["role"], "content": item["message"]})
     
     messages.append({"role": "user", "content": user_message})
@@ -291,7 +318,8 @@ RULES:
             save_conversation(user_id, "assistant", reply)
             return reply
         else:
-            return f"Sorry, I'm having trouble. Please try again.\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
+            error_msg = f"Sorry, I'm having trouble. Please try again.\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
+            return error_msg
         
     except Exception as e:
         print(f"Error: {e}")
@@ -316,8 +344,7 @@ def webhook():
         
         save_user(user_id, username, first_name, last_name)
         
-        # ============ COMMAND HANDLERS ============
-        
+        # Command handlers
         if text == "/start":
             reply = """🔷 **J.A.R.V.I.S. Online** 🔷
 
@@ -336,7 +363,7 @@ I'm your personal AI assistant with memory!
 /time - Current time
 /weather [city] - Get weather
 
-**Try telling me:** *"My name is [your name]"*
+**Try telling me:** *"I am [your name]"* or *"My name is [your name]"*
 
 ━━━━━━━━━━━━━━━━━━━━━
 🤖 **Powered By @Introspection007**"""
@@ -354,9 +381,12 @@ I'm your personal AI assistant with memory!
                 info += f"📍 Location: {profile['location']}\n"
             
             if facts:
-                for key, value in list(facts.items())[:5]:
+                other_facts = []
+                for key, value in facts.items():
                     if key not in ['name', 'age', 'location']:
-                        info += f"• {key}: {value}\n"
+                        other_facts.append(f"• {key}: {value}")
+                if other_facts:
+                    info += "\n📋 Other facts:\n" + "\n".join(other_facts[:5])
             
             if len(info) < 50:
                 info += "I don't know much about you yet. Tell me about yourself!"
@@ -379,9 +409,9 @@ I'm your personal AI assistant with memory!
 /weather [city] - Weather forecast
 
 **Memory Features:**
-• Tell me "My name is [name]" - I'll remember
-• Tell me "I am [age] years old" - I'll remember
-• Tell me "I live in [city]" - I'll remember
+• "I am [name]" - I'll remember your name
+• "I am [age] years old" - I'll remember your age
+• "I live in [city]" - I'll remember your location
 
 ━━━━━━━━━━━━━━━━━━━━━
 🤖 **Powered By @Introspection007**"""
@@ -411,7 +441,7 @@ I'm your personal AI assistant with memory!
         return "", 200
         
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error in webhook: {e}")
         return "", 200
 
 @app.route("/", methods=["GET"])
