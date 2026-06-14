@@ -1,20 +1,14 @@
 import os
 import requests
 import sqlite3
+import json
 from flask import Flask, request, jsonify
 from datetime import datetime
-from openai import OpenAI
 
 app = Flask(__name__)
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 SAMBANOVA_API_KEY = os.environ.get("SAMBANOVA_API_KEY")
-
-# Initialize SambaNova client (OpenAI-compatible)
-sambanova_client = OpenAI(
-    base_url="https://api.sambanova.ai/v1",
-    api_key=SAMBANOVA_API_KEY
-)
 
 # ============ DATABASE SETUP ============
 def init_db():
@@ -22,7 +16,6 @@ def init_db():
     conn = sqlite3.connect('jarvis_memory.db')
     c = conn.cursor()
     
-    # Users table - store user info
     c.execute('''CREATE TABLE IF NOT EXISTS users (
         user_id INTEGER PRIMARY KEY,
         username TEXT,
@@ -33,7 +26,6 @@ def init_db():
         last_seen TIMESTAMP
     )''')
     
-    # Conversations table - store chat history
     c.execute('''CREATE TABLE IF NOT EXISTS conversations (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER,
@@ -47,7 +39,6 @@ def init_db():
     print("✅ Database initialized!")
 
 def get_user(user_id):
-    """Get user from database"""
     conn = sqlite3.connect('jarvis_memory.db')
     c = conn.cursor()
     c.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
@@ -56,7 +47,6 @@ def get_user(user_id):
     return user
 
 def save_user(user_id, username, first_name, last_name):
-    """Save or update user"""
     conn = sqlite3.connect('jarvis_memory.db')
     c = conn.cursor()
     c.execute('''INSERT OR REPLACE INTO users 
@@ -67,7 +57,6 @@ def save_user(user_id, username, first_name, last_name):
     conn.close()
 
 def update_user_name(user_id, preferred_name):
-    """Update user's preferred name"""
     conn = sqlite3.connect('jarvis_memory.db')
     c = conn.cursor()
     c.execute("UPDATE users SET preferred_name = ? WHERE user_id = ?", (preferred_name, user_id))
@@ -75,7 +64,6 @@ def update_user_name(user_id, preferred_name):
     conn.close()
 
 def save_conversation(user_id, role, message):
-    """Save conversation to database"""
     conn = sqlite3.connect('jarvis_memory.db')
     c = conn.cursor()
     c.execute("INSERT INTO conversations (user_id, role, message, timestamp) VALUES (?, ?, ?, ?)",
@@ -84,17 +72,15 @@ def save_conversation(user_id, role, message):
     conn.close()
 
 def get_recent_conversation(user_id, limit=15):
-    """Get recent conversation history"""
     conn = sqlite3.connect('jarvis_memory.db')
     c = conn.cursor()
     c.execute("SELECT role, message FROM conversations WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?",
               (user_id, limit))
     history = c.fetchall()
     conn.close()
-    return list(reversed(history))  # Oldest to newest
+    return list(reversed(history))
 
 def clear_user_memory(user_id):
-    """Reset user's conversation history"""
     conn = sqlite3.connect('jarvis_memory.db')
     c = conn.cursor()
     c.execute("DELETE FROM conversations WHERE user_id = ?", (user_id,))
@@ -102,18 +88,41 @@ def clear_user_memory(user_id):
     conn.commit()
     conn.close()
 
-# Initialize database on startup
 init_db()
 
-# ============ AI RESPONSE WITH MEMORY ============
+# ============ SAMBANOVA AI REQUEST (NO openai package!) ============
+def get_sambanova_response(messages):
+    """Direct HTTP request to SambaNova API"""
+    url = "https://api.sambanova.ai/v1/chat/completions"
+    
+    headers = {
+        "Authorization": f"Bearer {SAMBANOVA_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "model": "Meta-Llama-3.3-70B-Instruct",
+        "messages": messages,
+        "temperature": 0.7,
+        "max_tokens": 500
+    }
+    
+    response = requests.post(url, json=payload, headers=headers, timeout=30)
+    
+    if response.status_code == 200:
+        result = response.json()
+        return result["choices"][0]["message"]["content"]
+    else:
+        print(f"SambaNova API Error: {response.status_code} - {response.text}")
+        return None
+
 def get_ai_response(user_message, user_id, first_name):
     """Get response from SambaNova AI with conversation memory"""
     
-    # Get user from database
     user = get_user(user_id)
     preferred_name = user[4] if user else None
     
-    # Extract name from message if user shares it
+    # Extract name from message
     msg_lower = user_message.lower()
     if "my name is" in msg_lower or "call me" in msg_lower:
         if "my name is" in msg_lower:
@@ -121,73 +130,58 @@ def get_ai_response(user_message, user_id, first_name):
         else:
             name = user_message.split("call me")[-1].strip()
         
-        # Remove any punctuation from name
         name = name.strip('.,!?')
         
         if name and len(name) < 30:
             update_user_name(user_id, name)
             preferred_name = name
             save_conversation(user_id, "user", user_message)
-            save_conversation(user_id, "assistant", f"Nice to meet you, {name}! I'll remember your name.")
             return f"🎉 Nice to meet you, **{name}**! I'll remember your name from now on. How can I help you today?\n\n━━━━━━━━━━━━━━━━━━━━━\n⚡ **Powered By SambaNova AI | @Introspection007**"
     
-    # Build system prompt with user info
+    # Build system prompt
     if preferred_name:
-        system_prompt = f"""You are J.A.R.V.I.S., a sophisticated AI assistant created by @Introspection007, powered by SambaNova AI.
+        system_prompt = f"""You are J.A.R.V.I.S., an AI assistant created by @Introspection007, powered by SambaNova AI.
 
-IMPORTANT RULES:
-- The user's name is {preferred_name}. ALWAYS address them by name in your responses.
-- Be warm, friendly, and personal - use their name naturally in conversation.
-- Remember everything they tell you during this conversation.
-- NEVER say "you haven't told me" if they already shared information.
-- Keep responses concise (2-3 sentences) unless more detail is requested.
-- Show personality and wit, but stay professional."""
-
+RULES:
+- The user's name is {preferred_name}. ALWAYS address them by name.
+- Be warm, friendly, and personal.
+- Keep responses concise (2-3 sentences).
+- Never say "you haven't told me" if they already shared information."""
     else:
-        system_prompt = """You are J.A.R.V.I.S., a sophisticated AI assistant created by @Introspection007, powered by SambaNova AI.
+        system_prompt = """You are J.A.R.V.I.S., an AI assistant created by @Introspection007, powered by SambaNova AI.
 
 RULES:
 - Be helpful, friendly, and concise.
-- If a user shares their name, remember to use it in future responses.
-- Show personality but stay professional.
-- Keep responses to 2-3 sentences unless more detail is requested."""
+- Keep responses to 2-3 sentences.
+- If a user shares their name, remember to use it."""
     
-    # Get recent conversation history
+    # Get conversation history
     history = get_recent_conversation(user_id, limit=15)
     
-    # Build messages array for SambaNova (OpenAI-compatible)
+    # Build messages
     messages = [{"role": "system", "content": system_prompt}]
     
-    # Add conversation history
     for role, msg in history:
         messages.append({"role": role, "content": msg})
     
-    # Add current message
     messages.append({"role": "user", "content": user_message})
     
     try:
-        # Call SambaNova API (using Meta-Llama-3.3-70B-Instruct)
-        response = sambanova_client.chat.completions.create(
-            model="Meta-Llama-3.3-70B-Instruct",  # Fast, powerful, free
-            messages=messages,
-            temperature=0.7,
-            max_tokens=500
-        )
-        reply = response.choices[0].message.content
+        reply = get_sambanova_response(messages)
         
-        # Add credit footer if not already there
-        if "@Introspection007" not in reply:
-            reply += "\n\n━━━━━━━━━━━━━━━━━━━━━\n⚡ **Powered By SambaNova AI | @Introspection007**"
-        
-        # Save conversation
-        save_conversation(user_id, "user", user_message)
-        save_conversation(user_id, "assistant", reply)
-        
-        return reply
+        if reply:
+            if "@Introspection007" not in reply:
+                reply += "\n\n━━━━━━━━━━━━━━━━━━━━━\n⚡ **Powered By SambaNova AI | @Introspection007**"
+            
+            save_conversation(user_id, "user", user_message)
+            save_conversation(user_id, "assistant", reply)
+            return reply
+        else:
+            return f"Sorry {preferred_name or 'friend'}, I'm having trouble connecting to AI. Please try again.\n\n━━━━━━━━━━━━━━━━━━━━━\n⚡ **Powered By @Introspection007**"
         
     except Exception as e:
-        print(f"SambaNova API Error: {e}")
-        return f"I'm experiencing some technical difficulties, {preferred_name or 'friend'}. Please try again in a moment.\n\n━━━━━━━━━━━━━━━━━━━━━\n⚡ **Powered By SambaNova AI | @Introspection007**"
+        print(f"Error: {e}")
+        return f"I'm experiencing technical difficulties. Please try again in a moment.\n\n━━━━━━━━━━━━━━━━━━━━━\n⚡ **Powered By @Introspection007**"
 
 # ============ FLASK WEBHOOK ============
 @app.route(f"/webhook/{TOKEN}", methods=["POST"])
@@ -206,65 +200,51 @@ def webhook():
         if not chat_id:
             return "", 200
         
-        # Save user info
         save_user(user_id, username, first_name, last_name)
         user = get_user(user_id)
         preferred_name = user[4] if user else None
         display_name = preferred_name or first_name or "there"
         
-        # Handle commands
         if text == "/start":
             reply = f"""🔷 **J.A.R.V.I.S. Online** 🔷
 
-Welcome back{' ' + display_name if display_name else ''}!
+Welcome back {display_name}!
 
-I'm your personal AI assistant powered by **SambaNova AI** with **persistent memory** - I remember our conversations!
+I'm your AI assistant powered by **SambaNova AI** with **persistent memory**!
 
-**✨ What I can do:**
-• Answer any questions
-• Remember your name and preferences
-• Continue conversations where we left off
-• Learn about you over time
-
-**📋 Commands:**
-/start - Welcome message
-/forget - Reset my memory of you  
-/help - Show all commands
+**Commands:**
+/start - Welcome
+/forget - Reset my memory
+/help - All commands
 /time - Current time
 /weather [city] - Get weather
 
-**💡 Try this:** *"My name is [your name]"* - I'll never forget!
+**Try:** *"My name is [your name]"* - I'll remember forever!
 
 ━━━━━━━━━━━━━━━━━━━━━
 ⚡ **Powered By SambaNova AI | @Introspection007**"""
         
         elif text == "/forget":
             clear_user_memory(user_id)
-            reply = f"🗑️ I've forgotten our previous conversations, {display_name}. I'm ready to start fresh with you!\n\n━━━━━━━━━━━━━━━━━━━━━\n⚡ **Powered By SambaNova AI | @Introspection007**"
+            reply = f"🗑️ I've forgotten our previous conversations, {display_name}. Fresh start!\n\n━━━━━━━━━━━━━━━━━━━━━\n⚡ **Powered By @Introspection007**"
         
         elif text == "/help":
             reply = f"""🔷 **J.A.R.V.I.S. Commands** 🔷
 
-**Core Commands:**
 /start - Welcome message
-/help - Show this menu
+/help - This menu
 /forget - Reset my memory
-
-**Utilities:**
 /time - Current time
-/weather [city] - Get weather forecast
+/weather [city] - Weather forecast
 
-**Memory Features:**
-• Tell me *"my name is [name]"* - I'll remember you forever
-• I recall our entire conversation history
-• I learn your preferences over time
+**Memory:** I remember your name and conversation history!
 
 ━━━━━━━━━━━━━━━━━━━━━
 ⚡ **Powered By SambaNova AI | @Introspection007**"""
         
         elif text == "/time":
             now = datetime.now()
-            reply = f"🕐 **Current time:** {now.strftime('%I:%M %p')}\n📅 **Date:** {now.strftime('%A, %B %d, %Y')}\n\n━━━━━━━━━━━━━━━━━━━━━\n⚡ **Powered By SambaNova AI | @Introspection007**"
+            reply = f"🕐 **Time:** {now.strftime('%I:%M %p')}\n📅 **Date:** {now.strftime('%A, %B %d, %Y')}\n\n━━━━━━━━━━━━━━━━━━━━━\n⚡ **Powered By @Introspection007**"
         
         elif text.startswith("/weather"):
             parts = text.split(maxsplit=1)
@@ -273,36 +253,28 @@ I'm your personal AI assistant powered by **SambaNova AI** with **persistent mem
                 url = f"https://wttr.in/{city}?format=%C+%t+%w&m"
                 response = requests.get(url, timeout=8)
                 weather_text = response.text.strip()
-                reply = f"🌤️ **Weather in {city.capitalize()}:** {weather_text}\n\n━━━━━━━━━━━━━━━━━━━━━\n⚡ **Powered By SambaNova AI | @Introspection007**"
+                reply = f"🌤️ **Weather in {city.capitalize()}:** {weather_text}\n\n━━━━━━━━━━━━━━━━━━━━━\n⚡ **Powered By @Introspection007**"
             except:
-                reply = f"🌤️ Sorry, couldn't fetch weather for {city}. Try another city name.\n\n━━━━━━━━━━━━━━━━━━━━━\n⚡ **Powered By SambaNova AI | @Introspection007**"
+                reply = f"🌤️ Couldn't fetch weather for {city}.\n\n━━━━━━━━━━━━━━━━━━━━━\n⚡ **Powered By @Introspection007**"
         
         else:
-            # Get AI response with memory
             reply = get_ai_response(text, user_id, first_name)
         
-        # Send reply
         send_url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-        payload = {
-            "chat_id": chat_id,
-            "text": reply,
-            "parse_mode": "Markdown"
-        }
+        payload = {"chat_id": chat_id, "text": reply, "parse_mode": "Markdown"}
         requests.post(send_url, json=payload)
         
         return "", 200
         
     except Exception as e:
-        print(f"Error in webhook: {e}")
+        print(f"Error: {e}")
         return "", 200
 
 @app.route("/", methods=["GET"])
 def index():
     return jsonify({
-        "status": "J.A.R.V.I.S. with SambaNova AI + Memory is running!",
-        "creator": "@Introspection007",
-        "ai_provider": "SambaNova (Meta-Llama-3.3-70B-Instruct)",
-        "features": ["Persistent Memory", "User Recognition", "Free AI"]
+        "status": "J.A.R.V.I.S. with SambaNova AI is running!",
+        "creator": "@Introspection007"
     })
 
 if __name__ == "__main__":
