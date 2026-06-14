@@ -1,7 +1,4 @@
-Flask[async]==2.3.3
-python-telegram-bot==20.7
-groq==0.4.2
+Flask==2.3.3
 requests==2.31.0
-speechrecognition==3.10.0
-pydub==0.25.1
+openai==1.30.0
 gunicorn==21.2.0
