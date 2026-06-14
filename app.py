@@ -1,179 +1,305 @@
 import os
 import requests
+import sqlite3
 from flask import Flask, request, jsonify
 from datetime import datetime
+from openai import OpenAI
 
 app = Flask(__name__)
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
-# Use Groq if available
-if GROQ_API_KEY:
-    from groq import Groq
-    groq_client = Groq(api_key=GROQ_API_KEY)
+# Initialize OpenAI client
+openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
-def get_ai_response(user_message):
-    """Get response from Groq AI - gender neutral, no 'sir'"""
-    if not GROQ_API_KEY:
-        return "I'm running in basic mode. Please contact @Introspection007 to enable AI features."
+# ============ DATABASE SETUP ============
+def init_db():
+    """Initialize SQLite database"""
+    conn = sqlite3.connect('jarvis_memory.db')
+    c = conn.cursor()
+    
+    # Users table - store user info
+    c.execute('''CREATE TABLE IF NOT EXISTS users (
+        user_id INTEGER PRIMARY KEY,
+        username TEXT,
+        first_name TEXT,
+        last_name TEXT,
+        preferred_name TEXT,
+        first_seen TIMESTAMP,
+        last_seen TIMESTAMP
+    )''')
+    
+    # Conversations table - store chat history
+    c.execute('''CREATE TABLE IF NOT EXISTS conversations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        role TEXT,
+        message TEXT,
+        timestamp TIMESTAMP
+    )''')
+    
+    conn.commit()
+    conn.close()
+    print("Database initialized!")
+
+def get_user(user_id):
+    """Get user from database"""
+    conn = sqlite3.connect('jarvis_memory.db')
+    c = conn.cursor()
+    c.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+    user = c.fetchone()
+    conn.close()
+    return user
+
+def save_user(user_id, username, first_name, last_name):
+    """Save or update user"""
+    conn = sqlite3.connect('jarvis_memory.db')
+    c = conn.cursor()
+    c.execute('''INSERT OR REPLACE INTO users 
+                 (user_id, username, first_name, last_name, last_seen)
+                 VALUES (?, ?, ?, ?, ?)''',
+              (user_id, username, first_name, last_name, datetime.now()))
+    conn.commit()
+    conn.close()
+
+def update_user_name(user_id, preferred_name):
+    """Update user's preferred name"""
+    conn = sqlite3.connect('jarvis_memory.db')
+    c = conn.cursor()
+    c.execute("UPDATE users SET preferred_name = ? WHERE user_id = ?", (preferred_name, user_id))
+    conn.commit()
+    conn.close()
+
+def save_conversation(user_id, role, message):
+    """Save conversation to database"""
+    conn = sqlite3.connect('jarvis_memory.db')
+    c = conn.cursor()
+    c.execute("INSERT INTO conversations (user_id, role, message, timestamp) VALUES (?, ?, ?, ?)",
+              (user_id, role, message, datetime.now()))
+    conn.commit()
+    conn.close()
+
+def get_recent_conversation(user_id, limit=15):
+    """Get recent conversation history"""
+    conn = sqlite3.connect('jarvis_memory.db')
+    c = conn.cursor()
+    c.execute("SELECT role, message FROM conversations WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?",
+              (user_id, limit))
+    history = c.fetchall()
+    conn.close()
+    return list(reversed(history))  # Oldest to newest
+
+def clear_user_memory(user_id):
+    """Reset user's conversation history"""
+    conn = sqlite3.connect('jarvis_memory.db')
+    c = conn.cursor()
+    c.execute("DELETE FROM conversations WHERE user_id = ?", (user_id,))
+    c.execute("UPDATE users SET preferred_name = NULL WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
+# Initialize database on startup
+init_db()
+
+# ============ AI RESPONSE WITH MEMORY ============
+def get_ai_response(user_message, user_id, first_name):
+    """Get response from OpenAI with conversation memory"""
+    
+    # Get user from database
+    user = get_user(user_id)
+    preferred_name = user[4] if user else None
+    
+    # Extract name from message if user shares it
+    msg_lower = user_message.lower()
+    if "my name is" in msg_lower or "call me" in msg_lower:
+        if "my name is" in msg_lower:
+            name = user_message.split("my name is")[-1].strip()
+        else:
+            name = user_message.split("call me")[-1].strip()
+        
+        # Remove any punctuation from name
+        name = name.strip('.,!?')
+        
+        if name and len(name) < 30:
+            update_user_name(user_id, name)
+            preferred_name = name
+            save_conversation(user_id, "user", user_message)
+            save_conversation(user_id, "assistant", f"Nice to meet you, {name}! I'll remember your name.")
+            return f"🎉 Nice to meet you, **{name}**! I'll remember your name from now on. How can I help you today?\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
+    
+    # Build system prompt with user info
+    if preferred_name:
+        system_prompt = f"""You are J.A.R.V.I.S., a sophisticated AI assistant created by @Introspection007.
+
+IMPORTANT RULES:
+- The user's name is {preferred_name}. ALWAYS address them by name in your responses.
+- Be warm, friendly, and personal - use their name naturally in conversation.
+- Remember everything they tell you during this conversation.
+- NEVER say "you haven't told me" if they already shared information.
+- Keep responses concise (2-3 sentences) unless more detail is requested.
+- Show personality and wit, but stay professional."""
+
+    else:
+        system_prompt = """You are J.A.R.V.I.S., a sophisticated AI assistant created by @Introspection007.
+
+RULES:
+- Be helpful, friendly, and concise.
+- If a user shares their name, remember to use it in future responses.
+- Show personality but stay professional.
+- Keep responses to 2-3 sentences unless more detail is requested."""
+    
+    # Get recent conversation history
+    history = get_recent_conversation(user_id, limit=15)
+    
+    # Build messages array for OpenAI
+    messages = [{"role": "system", "content": system_prompt}]
+    
+    # Add conversation history
+    for role, msg in history:
+        messages.append({"role": role, "content": msg})
+    
+    # Add current message
+    messages.append({"role": "user", "content": user_message})
     
     try:
-        response = groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": """You are J.A.R.V.I.S., an AI assistant created by @Introspection007. 
-                IMPORTANT RULES:
-                1. NEVER use 'sir', 'ma'am', or any gender-specific terms. Just speak directly to the user.
-                2. Use gender-neutral language like 'you' or 'the user'
-                3. Answer ANY question the user asks
-                4. Be helpful, concise, and friendly
-                5. Keep responses under 3 sentences when possible"""},
-                {"role": "user", "content": user_message}
-            ],
+        # Call OpenAI API
+        response = openai_client.chat.completions.create(
+            model="gpt-3.5-turbo",  # or "gpt-4" if you have access
+            messages=messages,
             temperature=0.7,
-            max_tokens=300
+            max_tokens=500
         )
-        return response.choices[0].message.content
+        reply = response.choices[0].message.content
+        
+        # Add credit footer if not already there
+        if "@Introspection007" not in reply:
+            reply += "\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
+        
+        # Save conversation
+        save_conversation(user_id, "user", user_message)
+        save_conversation(user_id, "assistant", reply)
+        
+        return reply
+        
     except Exception as e:
-        return f"AI temporarily unavailable. Please try again.\n\nPowered by @Introspection007"
+        print(f"OpenAI API Error: {e}")
+        return f"I'm experiencing some technical difficulties, {preferred_name or 'friend'}. Please try again in a moment.\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
 
+# ============ FLASK WEBHOOK ============
 @app.route(f"/webhook/{TOKEN}", methods=["POST"])
 def webhook():
     try:
         update = request.get_json()
+        
         message = update.get("message", {})
         chat_id = message.get("chat", {}).get("id")
+        user_id = message.get("from", {}).get("id")
+        username = message.get("from", {}).get("username", "")
+        first_name = message.get("from", {}).get("first_name", "")
+        last_name = message.get("from", {}).get("last_name", "")
         text = message.get("text", "")
         
         if not chat_id:
-            return jsonify({"status": "ok"}), 200
+            return "", 200
         
-        # ============ COMMANDS ============
+        # Save user info
+        save_user(user_id, username, first_name, last_name)
+        user = get_user(user_id)
+        preferred_name = user[4] if user else None
+        display_name = preferred_name or first_name or "there"
         
+        # Handle commands
         if text == "/start":
-            reply = """🔷 **J.A.R.V.I.S. Online** 🔷
+            reply = f"""🔷 **J.A.R.V.I.S. Online** 🔷
 
-I'm your personal AI assistant. You can ask me ANYTHING!
+Welcome back{' ' + display_name if display_name else ''}!
 
-**Commands:**
+I'm your personal AI assistant powered by **OpenAI** with **persistent memory** - I remember our conversations!
+
+**✨ What I can do:**
+• Answer any questions
+• Remember your name and preferences
+• Continue conversations where we left off
+• Learn about you over time
+
+**📋 Commands:**
+/start - Welcome message
+/forget - Reset my memory of you  
 /help - Show all commands
 /time - Current time
-/weather [city] - Get real weather
-/ask [question] - Ask me anything
-/credits - About me
+/weather [city] - Get weather
 
-**Or just type any question naturally!**
+**💡 Try this:** *"My name is [your name]"* - I'll never forget!
 
 ━━━━━━━━━━━━━━━━━━━━━
 🤖 **Powered By @Introspection007**"""
+        
+        elif text == "/forget":
+            clear_user_memory(user_id)
+            reply = f"🗑️ I've forgotten our previous conversations, {display_name}. I'm ready to start fresh with you!\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
         
         elif text == "/help":
-            reply = """🔷 **J.A.R.V.I.S. Commands** 🔷
+            reply = f"""🔷 **J.A.R.V.I.S. Commands** 🔷
 
-/start - Initialize JARVIS
+**Core Commands:**
+/start - Welcome message
 /help - Show this menu
-/time - Current time & date
-/weather [city] - Get real weather forecast
-/ask [question] - Ask me anything
-/credits - Developer info
+/forget - Reset my memory
 
-**Examples:**
-/time
-/weather London
-/weather Paris
-/ask What is AI?
+**Utilities:**
+/time - Current time
+/weather [city] - Get weather forecast
+
+**Memory Features:**
+• Tell me *"my name is [name]"* - I'll remember you forever
+• I recall our entire conversation history
+• I learn your preferences over time
 
 ━━━━━━━━━━━━━━━━━━━━━
 🤖 **Powered By @Introspection007**"""
         
-        # ============ TIME COMMAND - FIXED ============
         elif text == "/time":
             now = datetime.now()
-            time_str = now.strftime("%I:%M %p")
-            date_str = now.strftime("%A, %B %d, %Y")
-            reply = f"🕐 **Current Time:** {time_str}\n📅 **Date:** {date_str}\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 @Introspection007"
+            reply = f"🕐 **Current time:** {now.strftime('%I:%M %p')}\n📅 **Date:** {now.strftime('%A, %B %d, %Y')}\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
         
-        # ============ WEATHER COMMAND - FIXED ============
         elif text.startswith("/weather"):
             parts = text.split(maxsplit=1)
-            if len(parts) > 1:
-                city = parts[1]
-            else:
-                reply = "🌤️ **Usage:** `/weather [city name]`\n\nExample: `/weather London`\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 @Introspection007"
-                await_send(reply, chat_id)
-                return jsonify({"status": "ok"}), 200
-            
+            city = parts[1] if len(parts) > 1 else "London"
             try:
-                # Using wttr.in for free weather data
-                url = f"https://wttr.in/{city}?format=%C+%t+%w+%h&m"
-                response = requests.get(url, timeout=10)
+                url = f"https://wttr.in/{city}?format=%C+%t+%w&m"
+                response = requests.get(url, timeout=8)
                 weather_text = response.text.strip()
-                
-                if "Unknown" in weather_text or not weather_text:
-                    reply = f"🌤️ Could not find weather for '{city}'. Please check the city name.\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 @Introspection007"
-                else:
-                    # Parse weather response
-                    parts = weather_text.split()
-                    condition = " ".join(parts[:-2]) if len(parts) > 2 else parts[0]
-                    temp = parts[-2] if len(parts) >= 2 else "?"
-                    wind = parts[-1] if len(parts) >= 1 else "?"
-                    
-                    reply = f"🌤️ **Weather in {city.capitalize()}:**\n\n{condition}\n🌡️ Temperature: {temp}\n💨 Wind: {wind}\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 @Introspection007"
-            except Exception as e:
-                reply = f"🌤️ Sorry, I couldn't fetch weather for '{city}'. Try another city name.\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 @Introspection007"
+                reply = f"🌤️ **Weather in {city.capitalize()}:** {weather_text}\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
+            except:
+                reply = f"🌤️ Sorry, couldn't fetch weather for {city}. Try another city name.\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
         
-        # ============ CREDITS COMMAND ============
-        elif text == "/credits":
-            reply = """👨‍💻 **J.A.R.V.I.S. AI Assistant**
-
-**Developer:** @Introspection007
-**Version:** 1.0
-**Platform:** Telegram Bot (Vercel)
-
-**Features:**
-• Real-time weather
-• Current time & date
-• AI conversations (Groq Llama 3.3)
-• Answers ANY question
-
-━━━━━━━━━━━━━━━━━━━━━
-*For support: @Introspection007*"""
-        
-        # ============ ASK COMMAND ============
-        elif text.startswith("/ask "):
-            question = text[5:]
-            if not question.strip():
-                reply = "What would you like to ask?\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 @Introspection007"
-            else:
-                ai_response = get_ai_response(question)
-                reply = f"🤖 **JARVIS:** {ai_response}\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 @Introspection007"
-        
-        # ============ ANY OTHER MESSAGE ============
         else:
-            ai_response = get_ai_response(text)
-            reply = f"🤖 **JARVIS:** {ai_response}\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 @Introspection007"
+            # Get AI response with memory
+            reply = get_ai_response(text, user_id, first_name)
         
         # Send reply
-        url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-        payload = {"chat_id": chat_id, "text": reply, "parse_mode": "Markdown"}
-        requests.post(url, json=payload, timeout=10)
+        send_url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+        payload = {
+            "chat_id": chat_id,
+            "text": reply,
+            "parse_mode": "Markdown"
+        }
+        requests.post(send_url, json=payload)
         
-        return jsonify({"status": "ok"}), 200
+        return "", 200
         
     except Exception as e:
-        print(f"Error: {e}")
-        return jsonify({"status": "error"}), 500
-
-def send_reply(text, chat_id):
-    """Helper function to send reply"""
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
-    requests.post(url, json=payload, timeout=10)
+        print(f"Error in webhook: {e}")
+        return "", 200
 
 @app.route("/", methods=["GET"])
 def index():
-    return jsonify({"status": "J.A.R.V.I.S. is running!", "creator": "@Introspection007"})
+    return jsonify({
+        "status": "J.A.R.V.I.S. with OpenAI + Memory is running!",
+        "creator": "@Introspection007",
+        "features": ["Persistent Memory", "OpenAI Powered", "User Recognition"]
+    })
 
 if __name__ == "__main__":
     app.run()
