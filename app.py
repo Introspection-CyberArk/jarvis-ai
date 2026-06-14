@@ -23,11 +23,11 @@ def get_groq_response(user_message):
         payload = {
             "model": "llama-3.3-70b-versatile",
             "messages": [
-                {"role": "system", "content": "You are J.A.R.V.I.S., a helpful AI assistant created by @Introspection007. Be friendly, concise, and answer questions directly in 1-2 sentences."},
+                {"role": "system", "content": "You are J.A.R.V.I.S., a helpful AI assistant created by @Introspection007. Be friendly, warm, and answer questions directly. Keep responses short and natural."},
                 {"role": "user", "content": user_message}
             ],
             "temperature": 0.7,
-            "max_tokens": 200
+            "max_tokens": 150
         }
         response = requests.post(url, json=payload, headers=headers, timeout=8)
         
@@ -49,11 +49,11 @@ def get_sambanova_response(user_message):
         payload = {
             "model": "Meta-Llama-3.1-8B-Instruct",
             "messages": [
-                {"role": "system", "content": "You are J.A.R.V.I.S., a helpful AI assistant created by @Introspection007. Be friendly, concise, and answer questions directly in 1-2 sentences."},
+                {"role": "system", "content": "You are J.A.R.V.I.S., a helpful AI assistant created by @Introspection007. Be friendly, warm, and answer questions directly. Keep responses short and natural."},
                 {"role": "user", "content": user_message}
             ],
             "temperature": 0.7,
-            "max_tokens": 200
+            "max_tokens": 150
         }
         response = requests.post(url, json=payload, headers=headers, timeout=8)
         
@@ -79,7 +79,7 @@ def get_ai_response(user_message):
         if response:
             return response
     
-    # Ultimate fallback - local responses
+    # Ultimate fallback
     return get_fallback_response(user_message)
 
 def get_fallback_response(user_message):
@@ -90,14 +90,14 @@ def get_fallback_response(user_message):
         now = datetime.now()
         return f"It's {now.strftime('%I:%M %p')} on {now.strftime('%A, %B %d')}"
     
-    if "hello" in msg or "hi" in msg:
+    if "hello" in msg or "hi" in msg or "hey" in msg:
         return "Hello! How can I help you today?"
     
     if "how are you" in msg:
-        return "I'm functioning perfectly! Ready to assist you."
+        return "I'm doing great! Ready to help you."
     
     if "your name" in msg or "who are you" in msg:
-        return "I'm J.A.R.V.I.S., your AI assistant created by @Introspection007!"
+        return "I'm J.A.R.V.I.S., your personal AI assistant."
     
     if "joke" in msg:
         jokes = [
@@ -107,7 +107,7 @@ def get_fallback_response(user_message):
         ]
         return random.choice(jokes)
     
-    return "I'm J.A.R.V.I.S.! Ask me about the time, weather, or anything else!"
+    return "I'm here to help! What would you like to know?"
 
 def get_weather(city):
     try:
@@ -142,7 +142,7 @@ def webhook():
         if text == "/start":
             reply = """🔷 **J.A.R.V.I.S. Online** 🔷
 
-I'm your AI assistant powered by **Groq + SambaNova**!
+I'm your personal AI assistant!
 
 **Commands:**
 /start - Show menu
@@ -162,10 +162,7 @@ I'm your AI assistant powered by **Groq + SambaNova**!
 /weather [city] - Weather forecast
 /start - Show menu
 
-**AI Features:**
-• Answers any question
-• Tells jokes
-• Natural conversation
+**You can also just ask me anything!**
 
 ━━━━━━━━━━━━━━━━━━━━━
 🤖 **Powered By @Introspection007**"""
@@ -184,9 +181,9 @@ I'm your AI assistant powered by **Groq + SambaNova**!
                 reply = f"🌤️ Couldn't find weather for '{city}'. Try another city.\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
         
         else:
-            # Get AI response (Groq -> SambaNova -> Fallback)
+            # Get AI response
             ai_response = get_ai_response(text)
-            reply = f"🤖 **J.A.R.V.I.S.:** {ai_response}\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
+            reply = f"🤖 {ai_response}\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
         
         # Send response
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
@@ -203,9 +200,7 @@ I'm your AI assistant powered by **Groq + SambaNova**!
 def index():
     return {
         "status": "J.A.R.V.I.S. is running!",
-        "creator": "@Introspection007",
-        "ai_providers": ["Groq", "SambaNova"],
-        "features": ["Time", "Weather", "AI Chat"]
+        "creator": "@Introspection007"
     }
 
 if __name__ == "__main__":
