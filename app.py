@@ -7,6 +7,7 @@ app = Flask(__name__)
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+OPENWEATHER_API_KEY = "6d41f0ecd281e84165a9b8cf76821a17"
 
 def get_groq_response(user_message):
     try:
@@ -33,13 +34,40 @@ def get_groq_response(user_message):
         return None
 
 def get_weather(city):
+    """Get weather from OpenWeatherMap API"""
     try:
-        url = f"https://wttr.in/{city}?format=%C+%t&m"
-        resp = requests.get(url, timeout=5)
-        if resp.status_code == 200 and "Unknown" not in resp.text:
-            return resp.text.strip()
+        # First, get coordinates for the city
+        geo_url = f"http://api.openweathermap.org/geo/1.0/direct?q={city}&limit=1&appid={OPENWEATHER_API_KEY}"
+        geo_response = requests.get(geo_url, timeout=5)
+        
+        if geo_response.status_code == 200 and geo_response.json():
+            lat = geo_response.json()[0]["lat"]
+            lon = geo_response.json()[0]["lon"]
+            city_name = geo_response.json()[0]["name"]
+            
+            # Get weather data
+            weather_url = f"https://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={OPENWEATHER_API_KEY}&units=metric"
+            weather_response = requests.get(weather_url, timeout=5)
+            
+            if weather_response.status_code == 200:
+                data = weather_response.json()
+                temp = round(data["main"]["temp"])
+                feels_like = round(data["main"]["feels_like"])
+                humidity = data["main"]["humidity"]
+                description = data["weather"][0]["description"].capitalize()
+                wind_speed = data["wind"]["speed"]
+                
+                return {
+                    "city": city_name,
+                    "temp": temp,
+                    "feels_like": feels_like,
+                    "humidity": humidity,
+                    "description": description,
+                    "wind": wind_speed
+                }
         return None
-    except:
+    except Exception as e:
+        print(f"Weather error: {e}")
         return None
 
 @app.route(f"/webhook/{TOKEN}", methods=["POST"])
@@ -70,7 +98,7 @@ I'm your AI assistant powered by Groq!
 /start - Show menu
 /help - All commands
 /time - Current time
-/weather [city] - Get weather
+/weather [city] - Get accurate weather
 
 **Just type anything and I'll respond!**
 
@@ -81,7 +109,7 @@ I'm your AI assistant powered by Groq!
             reply = """🔷 **J.A.R.V.I.S. Commands** 🔷
 
 /time - Current time
-/weather [city] - Weather forecast
+/weather [city] - Get weather (e.g., /weather London)
 /start - Show menu
 
 ━━━━━━━━━━━━━━━━━━━━━
@@ -93,12 +121,23 @@ I'm your AI assistant powered by Groq!
         
         elif text.startswith("/weather"):
             parts = text.split(maxsplit=1)
-            city = parts[1] if len(parts) > 1 else "London"
-            weather = get_weather(city)
-            if weather:
-                reply = f"🌤️ **Weather in {city.capitalize()}:** {weather}\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
+            if len(parts) < 2:
+                reply = "🌤️ Please specify a city.\n\nExample: `/weather London`\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
             else:
-                reply = f"🌤️ Couldn't find weather for '{city}'.\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
+                city = parts[1]
+                weather = get_weather(city)
+                if weather:
+                    reply = f"""🌤️ **Weather in {weather['city']}**
+
+🌡️ Temperature: {weather['temp']}°C (feels like {weather['feels_like']}°C)
+☁️ Conditions: {weather['description']}
+💧 Humidity: {weather['humidity']}%
+💨 Wind Speed: {weather['wind']} m/s
+
+━━━━━━━━━━━━━━━━━━━━━
+🤖 **Powered By @Introspection007**"""
+                else:
+                    reply = f"🌤️ Couldn't find weather for '{city}'. Please check the city name.\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"""
         
         else:
             ai_response = get_groq_response(text)
