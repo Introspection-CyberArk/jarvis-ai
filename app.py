@@ -7,7 +7,7 @@ app = Flask(__name__)
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-OPENWEATHER_API_KEY = "6d41f0ecd281e84165a9b8cf76821a17"
+OPENWEATHER_API_KEY = os.environ.get("OPENWEATHER_API_KEY")
 
 def get_groq_response(user_message):
     try:
@@ -35,36 +35,30 @@ def get_groq_response(user_message):
 
 def get_weather(city):
     """Get weather from OpenWeatherMap API"""
+    if not OPENWEATHER_API_KEY:
+        return None
+    
     try:
-        # First, get coordinates for the city
-        geo_url = f"http://api.openweathermap.org/geo/1.0/direct?q={city}&limit=1&appid={OPENWEATHER_API_KEY}"
-        geo_response = requests.get(geo_url, timeout=5)
+        url = f"https://api.openweathermap.org/data/2.5/weather?q={city}&appid={OPENWEATHER_API_KEY}&units=metric"
+        response = requests.get(url, timeout=8)
         
-        if geo_response.status_code == 200 and geo_response.json():
-            lat = geo_response.json()[0]["lat"]
-            lon = geo_response.json()[0]["lon"]
-            city_name = geo_response.json()[0]["name"]
+        if response.status_code == 200:
+            data = response.json()
+            temp = round(data["main"]["temp"])
+            feels_like = round(data["main"]["feels_like"])
+            humidity = data["main"]["humidity"]
+            description = data["weather"][0]["description"].capitalize()
+            wind_speed = data["wind"]["speed"]
+            city_name = data["name"]
             
-            # Get weather data
-            weather_url = f"https://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={OPENWEATHER_API_KEY}&units=metric"
-            weather_response = requests.get(weather_url, timeout=5)
-            
-            if weather_response.status_code == 200:
-                data = weather_response.json()
-                temp = round(data["main"]["temp"])
-                feels_like = round(data["main"]["feels_like"])
-                humidity = data["main"]["humidity"]
-                description = data["weather"][0]["description"].capitalize()
-                wind_speed = data["wind"]["speed"]
-                
-                return {
-                    "city": city_name,
-                    "temp": temp,
-                    "feels_like": feels_like,
-                    "humidity": humidity,
-                    "description": description,
-                    "wind": wind_speed
-                }
+            return {
+                "city": city_name,
+                "temp": temp,
+                "feels_like": feels_like,
+                "humidity": humidity,
+                "description": description,
+                "wind": wind_speed
+            }
         return None
     except Exception as e:
         print(f"Weather error: {e}")
@@ -92,13 +86,13 @@ def webhook():
         if text == "/start":
             reply = """🔷 **J.A.R.V.I.S. Online** 🔷
 
-I'm your AI assistant powered by Groq!
+I'm your personal AI assistant!
 
 **Commands:**
 /start - Show menu
 /help - All commands
 /time - Current time
-/weather [city] - Get accurate weather
+/weather [city] - Get weather
 
 **Just type anything and I'll respond!**
 
