@@ -8,47 +8,27 @@ from timezonefinder import TimezoneFinder
 app = Flask(__name__)
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 OPENWEATHER_API_KEY = os.environ.get("OPENWEATHER_API_KEY")
 
 tf = TimezoneFinder()
 
-def get_user_timezone(city=None):
-    """Get timezone from city name"""
-    if not city:
-        return "Asia/Kolkata"  # Default to IST
-    
+def get_ai_response(user_message):
+    """Get response from OpenRouter AI (free)"""
     try:
-        # Get coordinates for city
-        geo_url = f"http://api.openweathermap.org/geo/1.0/direct?q={city}&limit=1&appid={OPENWEATHER_API_KEY}"
-        response = requests.get(geo_url, timeout=5)
-        
-        if response.status_code == 200 and response.json():
-            lat = response.json()[0]["lat"]
-            lon = response.json()[0]["lon"]
-            timezone = tf.timezone_at(lat=lat, lng=lon)
-            if timezone:
-                return timezone
-        return "Asia/Kolkata"
-    except:
-        return "Asia/Kolkata"
-
-def get_groq_response(user_message):
-    """Get response from Groq AI"""
-    try:
-        url = "https://api.groq.com/openai/v1/chat/completions"
+        url = "https://openrouter.ai/api/v1/chat/completions"
         headers = {
-            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
             "Content-Type": "application/json"
         }
         payload = {
-            "model": "mixtral-8x7b-32768",
+            "model": "microsoft/phi-3-mini-128k-instruct:free",
             "messages": [
-                {"role": "system", "content": "You are J.A.R.V.I.S., a helpful AI assistant created by @Introspection007. Be friendly, warm, and answer questions directly. Keep responses short and natural."},
+                {"role": "system", "content": "You are J.A.R.V.I.S., a helpful AI assistant created by @Introspection007. Be friendly, warm, and answer questions directly. Keep responses short and natural (1-2 sentences)."},
                 {"role": "user", "content": user_message}
             ],
             "temperature": 0.7,
-            "max_tokens": 200
+            "max_tokens": 150
         }
         response = requests.post(url, json=payload, headers=headers, timeout=10)
         
@@ -56,7 +36,7 @@ def get_groq_response(user_message):
             return response.json()["choices"][0]["message"]["content"]
         return None
     except Exception as e:
-        print(f"Groq error: {e}")
+        print(f"AI error: {e}")
         return None
 
 def get_weather(city):
@@ -83,9 +63,7 @@ def get_weather(city):
                 "feels_like": feels_like,
                 "humidity": humidity,
                 "description": description,
-                "wind": wind_speed,
-                "lat": data["coord"]["lat"],
-                "lon": data["coord"]["lon"]
+                "wind": wind_speed
             }
         return None
     except Exception as e:
@@ -96,7 +74,6 @@ def get_local_time(city=None):
     """Get local time for a city"""
     try:
         if city:
-            # Get coordinates and timezone for city
             geo_url = f"http://api.openweathermap.org/geo/1.0/direct?q={city}&limit=1&appid={OPENWEATHER_API_KEY}"
             response = requests.get(geo_url, timeout=5)
             
@@ -112,28 +89,23 @@ def get_local_time(city=None):
                     return {
                         "city": city_name,
                         "time": now.strftime('%I:%M %p'),
-                        "date": now.strftime('%A, %B %d, %Y'),
-                        "timezone": timezone_str
+                        "date": now.strftime('%A, %B %d, %Y')
                     }
         
-        # Default to IST (India)
         tz = pytz.timezone("Asia/Kolkata")
         now = datetime.now(tz)
         return {
             "city": "India",
             "time": now.strftime('%I:%M %p'),
-            "date": now.strftime('%A, %B %d, %Y'),
-            "timezone": "Asia/Kolkata"
+            "date": now.strftime('%A, %B %d, %Y')
         }
-    except Exception as e:
-        print(f"Time error: {e}")
+    except:
         tz = pytz.timezone("Asia/Kolkata")
         now = datetime.now(tz)
         return {
             "city": "India",
             "time": now.strftime('%I:%M %p'),
-            "date": now.strftime('%A, %B %d, %Y'),
-            "timezone": "Asia/Kolkata"
+            "date": now.strftime('%A, %B %d, %Y')
         }
 
 @app.route(f"/webhook/{TOKEN}", methods=["POST"])
@@ -186,15 +158,9 @@ I'm your personal AI assistant!
         elif text.startswith("/time"):
             parts = text.split(maxsplit=1)
             if len(parts) > 1:
-                # Time for specific city
-                city = parts[1]
-                time_data = get_local_time(city)
-                if time_data:
-                    reply = f"🕐 **Time in {time_data['city']}:** {time_data['time']}\n📅 **Date:** {time_data['date']}\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
-                else:
-                    reply = f"🕐 Couldn't find time for '{city}'.\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
+                time_data = get_local_time(parts[1])
+                reply = f"🕐 **Time in {time_data['city']}:** {time_data['time']}\n📅 **Date:** {time_data['date']}\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
             else:
-                # Default time
                 time_data = get_local_time()
                 reply = f"🕐 **Time:** {time_data['time']}\n📅 **Date:** {time_data['date']}\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
         
@@ -203,8 +169,7 @@ I'm your personal AI assistant!
             if len(parts) < 2:
                 reply = "🌤️ Please specify a city.\n\nExample: `/weather London`\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
             else:
-                city = parts[1]
-                weather = get_weather(city)
+                weather = get_weather(parts[1])
                 if weather:
                     reply = f"""🌤️ **Weather in {weather['city']}**
 
@@ -216,16 +181,27 @@ I'm your personal AI assistant!
 ━━━━━━━━━━━━━━━━━━━━━
 🤖 **Powered By @Introspection007**"""
                 else:
-                    reply = f"🌤️ Couldn't find weather for '{city}'. Please check the city name.\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"""
+                    reply = f"🌤️ Couldn't find weather for '{parts[1]}'.\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"""
         
         else:
-            # Get AI response for any question
-            ai_response = get_groq_response(text)
+            # Get AI response
+            ai_response = get_ai_response(text)
             if ai_response:
                 reply = f"🤖 {ai_response}\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
             else:
-                # Fallback response
-                reply = f"I'm J.A.R.V.I.S.! Ask me for weather, time, or any question.\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
+                # Simple fallback responses
+                msg_lower = text.lower()
+                if "hello" in msg_lower or "hi" in msg_lower:
+                    reply = f"🤖 Hello! How can I help you today?\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
+                elif "time" in msg_lower:
+                    time_data = get_local_time()
+                    reply = f"🕐 It's {time_data['time']} in {time_data['city']}\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
+                elif "weather" in msg_lower:
+                    reply = f"🌤️ Use /weather [city] to get weather!\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
+                elif "thank" in msg_lower:
+                    reply = f"🤖 You're welcome! 😊\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
+                else:
+                    reply = f"🤖 I'm J.A.R.V.I.S.! Use /weather [city] for weather, /time for time, or just ask me anything!\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
         
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
         payload = {"chat_id": chat_id, "text": reply, "parse_mode": "Markdown"}
