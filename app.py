@@ -14,40 +14,53 @@ OPENWEATHER_API_KEY = os.environ.get("OPENWEATHER_API_KEY")
 
 tf = TimezoneFinder()
 
-# ============ FUNCTIONS ============
+# Debug: Print API key status on startup
+print(f"OpenRouter API Key present: {bool(OPENROUTER_API_KEY)}")
+print(f"OpenWeather API Key present: {bool(OPENWEATHER_API_KEY)}")
 
 def get_ai_response(user_message):
-    """Get response from OpenRouter AI (ChatGPT-like)"""
+    """Get response from OpenRouter AI"""
     if not OPENROUTER_API_KEY:
+        print("No OpenRouter API key found!")
         return None
     
     try:
         url = "https://openrouter.ai/api/v1/chat/completions"
         headers = {
             "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://t.me/Jarvs_Ai_bot",
+            "X-Title": "J.A.R.V.I.S. Bot"
         }
         payload = {
-            "model": "google/gemini-2-flash-thinking-exp:free",
+            "model": "nousresearch/hermes-3-llama-3.1-405b:free",
             "messages": [
-                {"role": "system", "content": """You are J.A.R.V.I.S., a helpful AI assistant created by @Introspection007.
-You are friendly, warm, and conversational - just like ChatGPT.
-Answer questions naturally, have conversations, tell jokes, give advice.
-Keep responses concise but helpful. Never say you can't do something."""},
+                {"role": "system", "content": "You are J.A.R.V.I.S., a helpful AI assistant. Be friendly, conversational, and answer questions naturally. Keep responses concise but helpful."},
                 {"role": "user", "content": user_message}
             ],
             "temperature": 0.8,
-            "max_tokens": 300
+            "max_tokens": 250
         }
-        response = requests.post(url, json=payload, headers=headers, timeout=15)
+        
+        print(f"Sending request to OpenRouter for: {user_message[:50]}...")
+        response = requests.post(url, json=payload, headers=headers, timeout=20)
+        
+        print(f"OpenRouter response status: {response.status_code}")
         
         if response.status_code == 200:
-            return response.json()["choices"][0]["message"]["content"]
+            result = response.json()
+            reply = result["choices"][0]["message"]["content"]
+            print(f"Got response: {reply[:100]}...")
+            return reply
         else:
-            print(f"OpenRouter error: {response.status_code} - {response.text}")
+            print(f"OpenRouter error: {response.status_code} - {response.text[:200]}")
             return None
+            
+    except requests.exceptions.Timeout:
+        print("OpenRouter timeout")
+        return None
     except Exception as e:
-        print(f"OpenRouter error: {e}")
+        print(f"OpenRouter exception: {e}")
         return None
 
 def get_weather(city):
@@ -61,20 +74,13 @@ def get_weather(city):
         
         if response.status_code == 200:
             data = response.json()
-            temp = round(data["main"]["temp"])
-            feels_like = round(data["main"]["feels_like"])
-            humidity = data["main"]["humidity"]
-            description = data["weather"][0]["description"].capitalize()
-            wind_speed = data["wind"]["speed"]
-            city_name = data["name"]
-            
             return {
-                "city": city_name,
-                "temp": temp,
-                "feels_like": feels_like,
-                "humidity": humidity,
-                "description": description,
-                "wind": wind_speed
+                "city": data["name"],
+                "temp": round(data["main"]["temp"]),
+                "feels_like": round(data["main"]["feels_like"]),
+                "humidity": data["main"]["humidity"],
+                "description": data["weather"][0]["description"].capitalize(),
+                "wind": data["wind"]["speed"]
             }
         return None
     except Exception as e:
@@ -119,14 +125,6 @@ def get_local_time(city=None):
             "date": now.strftime('%A, %B %d, %Y')
         }
 
-# ============ JOKES FOR FALLBACK ============
-JOKES = [
-    "Why don't scientists trust atoms? Because they make up everything!",
-    "What do you call a fake noodle? An impasta!",
-    "Why did the scarecrow win an award? He was outstanding in his field!",
-]
-
-# ============ MAIN WEBHOOK ============
 @app.route(f"/webhook/{TOKEN}", methods=["POST"])
 def webhook():
     try:
@@ -145,7 +143,7 @@ def webhook():
         except:
             pass
         
-        # ============ COMMANDS ============
+        # Handle commands
         if text == "/start":
             reply = """🔷 **J.A.R.V.I.S. Online** 🔷
 
@@ -208,22 +206,14 @@ I'm your personal AI assistant - just like ChatGPT!
                     reply = f"🌤️ Couldn't find weather for '{parts[1]}'.\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"""
         
         else:
-            # Get ChatGPT-like AI response for ANY message
+            # Get AI response for ANY message
             ai_response = get_ai_response(text)
             
             if ai_response:
                 reply = f"🤖 {ai_response}\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
             else:
-                # Fallback when AI fails
-                msg_lower = text.lower()
-                if "hello" in msg_lower or "hi" in msg_lower:
-                    reply = f"🤖 Hello! How can I help you today?\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
-                elif "joke" in msg_lower:
-                    reply = f"😂 {random.choice(JOKES)}\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
-                elif "who are you" in msg_lower:
-                    reply = f"🤖 I'm J.A.R.V.I.S., your personal AI assistant created by @Introspection007!\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
-                else:
-                    reply = f"🤖 I'm J.A.R.V.I.S.! I can chat with you naturally. Try asking me anything!\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
+                # Fallback response when AI fails
+                reply = f"🤖 I'm having trouble connecting to my AI service. Please try again in a moment.\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
         
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
         payload = {"chat_id": chat_id, "text": reply, "parse_mode": "Markdown"}
