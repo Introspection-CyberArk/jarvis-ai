@@ -30,12 +30,9 @@ tf = TimezoneFinder()
 
 # ============ DATABASE FUNCTIONS ============
 def init_tables():
-    """Create tables if they don't exist"""
     if not supabase:
         return
-    
     try:
-        # Users table
         supabase.sql("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id BIGINT PRIMARY KEY,
@@ -46,8 +43,6 @@ def init_tables():
                 last_seen TIMESTAMP
             )
         """).execute()
-        
-        # User profile table
         supabase.sql("""
             CREATE TABLE IF NOT EXISTS user_profile (
                 id SERIAL PRIMARY KEY,
@@ -58,8 +53,6 @@ def init_tables():
                 updated_at TIMESTAMP
             )
         """).execute()
-        
-        # User facts table
         supabase.sql("""
             CREATE TABLE IF NOT EXISTS user_facts (
                 id SERIAL PRIMARY KEY,
@@ -70,8 +63,6 @@ def init_tables():
                 created_at TIMESTAMP
             )
         """).execute()
-        
-        # Conversations table
         supabase.sql("""
             CREATE TABLE IF NOT EXISTS conversations (
                 id SERIAL PRIMARY KEY,
@@ -81,7 +72,6 @@ def init_tables():
                 timestamp TIMESTAMP
             )
         """).execute()
-        
         print("✅ All tables ready!")
     except Exception as e:
         print(f"Table creation error: {e}")
@@ -107,20 +97,6 @@ def save_user_profile(user_id, data):
             supabase.table("user_profile").insert(data).execute()
     except Exception as e:
         print(f"Save profile error: {e}")
-
-def save_user_fact(user_id, fact_key, fact_value, context=""):
-    if not supabase:
-        return
-    try:
-        supabase.table("user_facts").insert({
-            "user_id": user_id,
-            "fact_key": fact_key,
-            "fact_value": fact_value,
-            "context": context,
-            "created_at": datetime.now().isoformat()
-        }).execute()
-    except Exception as e:
-        print(f"Save fact error: {e}")
 
 def save_user(user_id, username, first_name, last_name):
     if not supabase:
@@ -159,8 +135,7 @@ def save_conversation(user_id, role, message):
     except Exception as e:
         print(f"Save conversation error: {e}")
 
-def get_recent_messages(user_id, limit=20):
-    """Get recent conversation history for context"""
+def get_recent_messages(user_id, limit=15):
     if not supabase:
         return []
     try:
@@ -170,65 +145,23 @@ def get_recent_messages(user_id, limit=20):
             .order("timestamp", desc=False)\
             .limit(limit)\
             .execute()
-        
         history = []
         for row in result.data:
-            history.append({
-                "role": row["role"],
-                "content": row["message"]
-            })
+            history.append({"role": row["role"], "content": row["message"]})
         return history
     except:
         return []
-
-def cleanup_old_conversations(user_id, days=30, keep_count=50):
-    """Keep only recent conversations to prevent database bloat"""
-    if not supabase:
-        return
-    
-    # Delete messages older than 30 days
-    try:
-        old_date = (datetime.now() - timedelta(days=days)).isoformat()
-        supabase.table("conversations")\
-            .delete()\
-            .eq("user_id", user_id)\
-            .lt("timestamp", old_date)\
-            .execute()
-    except:
-        pass
-    
-    # Keep only last 50 messages
-    try:
-        # Get all messages for user
-        result = supabase.table("conversations")\
-            .select("id")\
-            .eq("user_id", user_id)\
-            .order("timestamp", desc=True)\
-            .execute()
-        
-        if len(result.data) > keep_count:
-            # Get IDs to delete (all except latest keep_count)
-            ids_to_keep = [row["id"] for row in result.data[:keep_count]]
-            ids_to_delete = [row["id"] for row in result.data[keep_count:]]
-            
-            if ids_to_delete:
-                for id_val in ids_to_delete:
-                    supabase.table("conversations")\
-                        .delete()\
-                        .eq("id", id_val)\
-                        .execute()
-    except:
-        pass
 
 def get_user_name(user_id):
     profile = get_user_profile(user_id)
     return profile.get("preferred_name")
 
 def save_user_name(user_id, name):
+    """Save user's preferred name"""
     profile = get_user_profile(user_id)
     profile["preferred_name"] = name
     save_user_profile(user_id, profile)
-    save_user_fact(user_id, "name", name, "User introduced themselves")
+    print(f"📝 Saved name: {name} for user {user_id}")
 
 def clear_user_memory(user_id):
     if not supabase:
@@ -244,7 +177,6 @@ def clear_user_memory(user_id):
 def get_ai_response(user_message, user_id):
     """Get response from OpenRouter AI with full conversation memory"""
     
-    # Try OpenRouter AI
     if not OPENROUTER_API_KEY:
         print("No OpenRouter API key!")
         return None
@@ -258,34 +190,26 @@ def get_ai_response(user_message, user_id):
             "X-Title": "J.A.R.V.I.S. Bot"
         }
         
-        # Get stored user info
         user_name = get_user_name(user_id)
         
-        # Build system prompt with user context
         system_prompt = """You are J.A.R.V.I.S., a helpful AI assistant created by @Introspection007.
-Be friendly, conversational, and answer questions naturally like ChatGPT.
+Be friendly, conversational, and answer questions naturally.
 Keep responses concise but helpful (1-3 sentences)."""
         
         if user_name:
             system_prompt += f" The user's name is {user_name}. Address them by name occasionally."
 
-        # Get conversation history
         history = get_recent_messages(user_id, limit=15)
         
-        # Build messages with full context
         messages = [{"role": "system", "content": system_prompt}]
-        
-        # Add conversation history
         for msg in history:
             messages.append({"role": msg["role"], "content": msg["content"]})
-        
-        # Add current message
         messages.append({"role": "user", "content": user_message})
         
         print(f"📨 Sending {len(messages)} messages to AI...")
 
         payload = {
-            "model": "qwen/qwen3-32b:free",  # Better ChatGPT-like model
+            "model": "qwen/qwen3-32b:free",
             "messages": messages,
             "temperature": 0.7,
             "max_tokens": 250
@@ -298,17 +222,11 @@ Keep responses concise but helpful (1-3 sentences)."""
         if response.status_code == 200:
             result = response.json()
             reply = result["choices"][0]["message"]["content"]
-            
-            # Save conversation
             save_conversation(user_id, "user", user_message)
             save_conversation(user_id, "assistant", reply)
-            
-            # Cleanup old messages
-            cleanup_old_conversations(user_id)
-            
             return reply
         else:
-            print(f"❌ OpenRouter error: {response.status_code} - {response.text[:200]}")
+            print(f"❌ OpenRouter error: {response.status_code}")
             return None
             
     except requests.exceptions.Timeout:
@@ -384,30 +302,52 @@ def webhook():
         except:
             pass
         
-        # Save user to Supabase
         save_user(user_id, username, first_name, last_name)
         
-        # Check if user is sharing their name (safer regex)
-        msg_lower = text.lower()
-        name_match = re.search(r'(?:my name is|call me)\s+([A-Za-z ]{2,30})$', msg_lower)
-        if name_match:
-            name = name_match.group(1).strip().title()
-            if len(name) >= 2:
-                save_user_name(user_id, name)
-                reply = f"🎉 Nice to meet you, **{name}**! I'll remember your name."
+        # ============ NAME EXTRACTION - MORE FLEXIBLE ============
+        msg_lower = text.lower().strip()
+        
+        # Check for various name patterns
+        name_extracted = None
+        
+        # Pattern 1: "I am Spiderman", "I'm Spiderman", "Im Spiderman"
+        match = re.search(r'(?:i am|i\'m|im)\s+([A-Za-z][A-Za-z\s\-]{1,20})$', msg_lower)
+        if match:
+            name_extracted = match.group(1).strip().title()
+        
+        # Pattern 2: "My name is Spiderman"
+        if not name_extracted:
+            match = re.search(r'my name is\s+([A-Za-z][A-Za-z\s\-]{1,20})', msg_lower)
+            if match:
+                name_extracted = match.group(1).strip().title()
+        
+        # Pattern 3: "Call me Spiderman"
+        if not name_extracted:
+            match = re.search(r'call me\s+([A-Za-z][A-Za-z\s\-]{1,20})', msg_lower)
+            if match:
+                name_extracted = match.group(1).strip().title()
+        
+        # If a name was extracted, save it
+        if name_extracted:
+            name_extracted = name_extracted.replace("Spider Man", "Spider-Man")
+            # Make sure it's a valid name (not a common word)
+            invalid_names = ['a', 'an', 'the', 'yeah', 'no', 'ok', 'okay', 'well', 'so', 'then', 'like', 'just', 'hello', 'hi', 'hey', 'what', 'who', 'where', 'when', 'why', 'how']
+            if name_extracted.lower() not in invalid_names and len(name_extracted) >= 2 and len(name_extracted) <= 30:
+                save_user_name(user_id, name_extracted)
+                reply = f"🎉 Nice to meet you, **{name_extracted}**! I'll remember your name."
                 return send_response(chat_id, reply)
         
         # Get stored name
         user_name = get_user_name(user_id)
         
-        # Handle commands
+        # ============ COMMAND HANDLERS ============
         if text == "/start":
             if user_name:
-                reply = f"""🔷 **J.A.R.V.I.S. Online** 🔷
+                reply = f"""🔷 J.A.R.V.I.S. Online 🔷
 
-Welcome back {user_name}! I'm your personal AI assistant.
+Welcome back {user_name}!
 
-**Commands:**
+Commands:
 /start - Show menu
 /help - All commands
 /time - Current time
@@ -416,29 +356,29 @@ Welcome back {user_name}! I'm your personal AI assistant.
 /whatiknow - What I remember
 /forget - Reset memory
 
-**Just type anything - I'll chat with you naturally!**
+Just type anything - I'll chat with you naturally!
 
 ━━━━━━━━━━━━━━━━━━━━━
-🤖 **Powered By @Introspection007**"""
+🤖 Powered By @Introspection007"""
             else:
-                reply = """🔷 **J.A.R.V.I.S. Online** 🔷
+                reply = """🔷 J.A.R.V.I.S. Online 🔷
 
 I'm your personal AI assistant!
 
-**Commands:**
+Commands:
 /start - Show menu
 /help - All commands
 /time - Current time
 /time [city] - Time in any city
 /weather [city] - Get weather
 
-**Try:** *"my name is [your name]"*
+Try: "I am [your name]"
 
 ━━━━━━━━━━━━━━━━━━━━━
-🤖 **Powered By @Introspection007**"""
+🤖 Powered By @Introspection007"""
         
         elif text == "/help":
-            reply = """🔷 **J.A.R.V.I.S. Commands** 🔷
+            reply = """🔷 J.A.R.V.I.S. Commands 🔷
 
 /time - Current time (India)
 /time London - Time in London
@@ -447,14 +387,14 @@ I'm your personal AI assistant!
 /forget - Reset my memory
 /start - Show menu
 
-**Or just chat with me naturally!**
+Or just chat with me naturally!
 
 ━━━━━━━━━━━━━━━━━━━━━
-🤖 **Powered By @Introspection007**"""
+🤖 Powered By @Introspection007"""
         
         elif text == "/whatiknow":
             profile = get_user_profile(user_id)
-            info = "📝 **What I remember about you:**\n\n"
+            info = "📝 What I remember about you:\n\n"
             if user_name:
                 info += f"👤 Name: {user_name}\n"
             if profile.get("age"):
@@ -463,32 +403,32 @@ I'm your personal AI assistant!
                 info += f"📍 Location: {profile['location']}\n"
             if len(info) < 50:
                 info += "Tell me about yourself!"
-            reply = info + "\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
+            reply = info + "\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 Powered By @Introspection007"
         
         elif text == "/forget":
             clear_user_memory(user_id)
-            reply = f"🗑️ All memories erased, {user_name or 'friend'}!\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
+            reply = f"🗑️ All memories erased, {user_name or 'friend'}!\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 Powered By @Introspection007"
         
         elif text.startswith("/time"):
             parts = text.split(maxsplit=1)
             if len(parts) > 1:
                 time_data = get_local_time(parts[1])
                 if time_data:
-                    reply = f"🕐 **Time in {time_data['city']}:** {time_data['time']}\n📅 **Date:** {time_data['date']}\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
+                    reply = f"🕐 Time in {time_data['city']}: {time_data['time']}\n📅 Date: {time_data['date']}\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 Powered By @Introspection007"
                 else:
-                    reply = f"🕐 Couldn't find time for '{parts[1]}'.\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
+                    reply = f"🕐 Couldn't find time for '{parts[1]}'.\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 Powered By @Introspection007"
             else:
                 time_data = get_local_time()
-                reply = f"🕐 **Time:** {time_data['time']}\n📅 **Date:** {time_data['date']}\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
+                reply = f"🕐 Time: {time_data['time']}\n📅 Date: {time_data['date']}\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 Powered By @Introspection007"
         
         elif text.startswith("/weather"):
             parts = text.split(maxsplit=1)
             if len(parts) < 2:
-                reply = "🌤️ Please specify a city.\n\nExample: `/weather London`\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
+                reply = "🌤️ Please specify a city.\n\nExample: /weather London\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 Powered By @Introspection007"
             else:
                 weather = get_weather(parts[1])
                 if weather:
-                    reply = f"""🌤️ **Weather in {weather['city']}**
+                    reply = f"""🌤️ Weather in {weather['city']}
 
 🌡️ Temperature: {weather['temp']}°C (feels like {weather['feels_like']}°C)
 ☁️ Conditions: {weather['description']}
@@ -496,18 +436,18 @@ I'm your personal AI assistant!
 💨 Wind Speed: {weather['wind']} m/s
 
 ━━━━━━━━━━━━━━━━━━━━━
-🤖 **Powered By @Introspection007**"""
+🤖 Powered By @Introspection007"""
                 else:
-                    reply = f"🌤️ Couldn't find weather for '{parts[1]}'.\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"""
+                    reply = f"🌤️ Couldn't find weather for '{parts[1]}'.\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 Powered By @Introspection007"""
         
         else:
             # Try AI response with full conversation memory
             ai_response = get_ai_response(text, user_id)
             
             if ai_response:
-                reply = f"🤖 {ai_response}\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
+                reply = f"🤖 {ai_response}\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 Powered By @Introspection007"
             else:
-                # Simple fallback responses
+                # Fallback responses
                 if "hello" in msg_lower or "hi" in msg_lower:
                     fallback = f"Hello {user_name or ''}! How can I help you today?"
                 elif "joke" in msg_lower:
@@ -524,10 +464,14 @@ I'm your personal AI assistant!
                 elif "time" in msg_lower:
                     time_data = get_local_time()
                     fallback = f"It's {time_data['time']} in {time_data['city']}"
+                elif "remember me" in msg_lower and user_name:
+                    fallback = f"Of course I remember you, {user_name}! 😊"
+                elif "remember me" in msg_lower and not user_name:
+                    fallback = "I don't know your name yet. Tell me 'I am [your name]'!"
                 else:
                     fallback = f"I'm J.A.R.V.I.S.! {user_name or ''} Ask me about weather, time, jokes, or anything else!"
                 
-                reply = f"🤖 {fallback}\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
+                reply = f"🤖 {fallback}\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 Powered By @Introspection007"
         
         return send_response(chat_id, reply)
         
@@ -536,12 +480,10 @@ I'm your personal AI assistant!
         return "", 200
 
 def send_response(chat_id, reply):
-    """Send response to Telegram - NO Markdown to avoid errors"""
+    """Send response to Telegram - clean text only"""
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    
-    # Clean message (remove any problematic characters)
-    reply = reply.replace('_', '').replace('*', '').replace('[', '').replace(']', '').replace('(', '').replace(')', '')
-    
+    # Remove Markdown characters
+    reply = reply.replace('_', '').replace('*', '').replace('[', '').replace(']', '').replace('(', '').replace(')', '').replace('`', '')
     payload = {"chat_id": chat_id, "text": reply[:4000]}
     requests.post(url, json=payload, timeout=10)
     return "", 200
