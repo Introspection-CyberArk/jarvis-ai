@@ -1,80 +1,330 @@
 import os
 import requests
+import json
+import re
 from flask import Flask, request
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 from timezonefinder import TimezoneFinder
 import random
-import time
+from supabase import create_client, Client
 
 app = Flask(__name__)
 
+# ============ ENVIRONMENT VARIABLES ============
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 OPENWEATHER_API_KEY = os.environ.get("OPENWEATHER_API_KEY")
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+
+# ============ SUPABASE INIT ============
+try:
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    print("✅ Supabase connected!")
+except Exception as e:
+    print(f"❌ Supabase error: {e}")
+    supabase = None
 
 tf = TimezoneFinder()
 
-# List of free models to try (fallback if one fails)
-MODELS = [
-    "microsoft/phi-3-mini-128k-instruct:free",
-    "mistralai/mistral-7b-instruct:free",
-    "google/gemini-flash-1.5-8b:free",
-    "meta-llama/llama-3.2-3b-instruct:free"
-]
+# ============ DATABASE FUNCTIONS ============
+def init_tables():
+    """Create tables if they don't exist"""
+    if not supabase:
+        return
+    
+    try:
+        # Users table
+        supabase.sql("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id BIGINT PRIMARY KEY,
+                username TEXT,
+                first_name TEXT,
+                last_name TEXT,
+                first_seen TIMESTAMP,
+                last_seen TIMESTAMP
+            )
+        """).execute()
+        
+        # User profile table
+        supabase.sql("""
+            CREATE TABLE IF NOT EXISTS user_profile (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT UNIQUE,
+                preferred_name TEXT,
+                age INTEGER,
+                location TEXT,
+                updated_at TIMESTAMP
+            )
+        """).execute()
+        
+        # User facts table
+        supabase.sql("""
+            CREATE TABLE IF NOT EXISTS user_facts (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT,
+                fact_key TEXT,
+                fact_value TEXT,
+                context TEXT,
+                created_at TIMESTAMP
+            )
+        """).execute()
+        
+        # Conversations table
+        supabase.sql("""
+            CREATE TABLE IF NOT EXISTS conversations (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT,
+                role TEXT,
+                message TEXT,
+                timestamp TIMESTAMP
+            )
+        """).execute()
+        
+        print("✅ All tables ready!")
+    except Exception as e:
+        print(f"Table creation error: {e}")
 
-def get_ai_response(user_message):
-    """Get response from OpenRouter AI with multiple model fallbacks"""
+def get_user_profile(user_id):
+    if not supabase:
+        return {}
+    try:
+        result = supabase.table("user_profile").select("*").eq("user_id", user_id).execute()
+        return result.data[0] if result.data else {}
+    except:
+        return {}
+
+def save_user_profile(user_id, data):
+    if not supabase:
+        return
+    try:
+        existing = get_user_profile(user_id)
+        if existing:
+            supabase.table("user_profile").update(data).eq("user_id", user_id).execute()
+        else:
+            data["user_id"] = user_id
+            supabase.table("user_profile").insert(data).execute()
+    except Exception as e:
+        print(f"Save profile error: {e}")
+
+def save_user_fact(user_id, fact_key, fact_value, context=""):
+    if not supabase:
+        return
+    try:
+        supabase.table("user_facts").insert({
+            "user_id": user_id,
+            "fact_key": fact_key,
+            "fact_value": fact_value,
+            "context": context,
+            "created_at": datetime.now().isoformat()
+        }).execute()
+    except Exception as e:
+        print(f"Save fact error: {e}")
+
+def save_user(user_id, username, first_name, last_name):
+    if not supabase:
+        return
+    try:
+        existing = supabase.table("users").select("*").eq("user_id", user_id).execute()
+        if existing.data:
+            supabase.table("users").update({
+                "username": username,
+                "first_name": first_name,
+                "last_name": last_name,
+                "last_seen": datetime.now().isoformat()
+            }).eq("user_id", user_id).execute()
+        else:
+            supabase.table("users").insert({
+                "user_id": user_id,
+                "username": username,
+                "first_name": first_name,
+                "last_name": last_name,
+                "first_seen": datetime.now().isoformat(),
+                "last_seen": datetime.now().isoformat()
+            }).execute()
+    except Exception as e:
+        print(f"Save user error: {e}")
+
+def save_conversation(user_id, role, message):
+    if not supabase:
+        return
+    try:
+        supabase.table("conversations").insert({
+            "user_id": user_id,
+            "role": role,
+            "message": message[:1000],
+            "timestamp": datetime.now().isoformat()
+        }).execute()
+    except Exception as e:
+        print(f"Save conversation error: {e}")
+
+def get_recent_messages(user_id, limit=20):
+    """Get recent conversation history for context"""
+    if not supabase:
+        return []
+    try:
+        result = supabase.table("conversations")\
+            .select("role, message")\
+            .eq("user_id", user_id)\
+            .order("timestamp", desc=False)\
+            .limit(limit)\
+            .execute()
+        
+        history = []
+        for row in result.data:
+            history.append({
+                "role": row["role"],
+                "content": row["message"]
+            })
+        return history
+    except:
+        return []
+
+def cleanup_old_conversations(user_id, days=30, keep_count=50):
+    """Keep only recent conversations to prevent database bloat"""
+    if not supabase:
+        return
+    
+    # Delete messages older than 30 days
+    try:
+        old_date = (datetime.now() - timedelta(days=days)).isoformat()
+        supabase.table("conversations")\
+            .delete()\
+            .eq("user_id", user_id)\
+            .lt("timestamp", old_date)\
+            .execute()
+    except:
+        pass
+    
+    # Keep only last 50 messages
+    try:
+        # Get all messages for user
+        result = supabase.table("conversations")\
+            .select("id")\
+            .eq("user_id", user_id)\
+            .order("timestamp", desc=True)\
+            .execute()
+        
+        if len(result.data) > keep_count:
+            # Get IDs to delete (all except latest keep_count)
+            ids_to_keep = [row["id"] for row in result.data[:keep_count]]
+            ids_to_delete = [row["id"] for row in result.data[keep_count:]]
+            
+            if ids_to_delete:
+                for id_val in ids_to_delete:
+                    supabase.table("conversations")\
+                        .delete()\
+                        .eq("id", id_val)\
+                        .execute()
+    except:
+        pass
+
+def get_user_name(user_id):
+    profile = get_user_profile(user_id)
+    return profile.get("preferred_name")
+
+def save_user_name(user_id, name):
+    profile = get_user_profile(user_id)
+    profile["preferred_name"] = name
+    save_user_profile(user_id, profile)
+    save_user_fact(user_id, "name", name, "User introduced themselves")
+
+def clear_user_memory(user_id):
+    if not supabase:
+        return
+    try:
+        supabase.table("conversations").delete().eq("user_id", user_id).execute()
+        supabase.table("user_profile").delete().eq("user_id", user_id).execute()
+        supabase.table("user_facts").delete().eq("user_id", user_id).execute()
+    except:
+        pass
+
+# ============ AI RESPONSE ============
+def get_ai_response(user_message, user_id):
+    """Get response from OpenRouter AI with full conversation memory"""
+    
+    # Try OpenRouter AI
     if not OPENROUTER_API_KEY:
-        print("No OpenRouter API key found!")
-        return None
-    
-    for model in MODELS:
-        try:
-            url = "https://openrouter.ai/api/v1/chat/completions"
-            headers = {
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://t.me/Jarvs_Ai_bot",
-                "X-Title": "J.A.R.V.I.S. Bot"
-            }
-            payload = {
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": "You are J.A.R.V.I.S., a helpful AI assistant created by @Introspection007. Be friendly, conversational, and answer questions naturally. Keep responses concise but helpful (1-3 sentences)."},
-                    {"role": "user", "content": user_message}
-                ],
-                "temperature": 0.7,
-                "max_tokens": 200
-            }
-            
-            print(f"Trying model: {model}")
-            response = requests.post(url, json=payload, headers=headers, timeout=15)
-            
-            if response.status_code == 200:
-                result = response.json()
-                reply = result["choices"][0]["message"]["content"]
-                print(f"Success with model: {model}")
-                return reply
-            else:
-                print(f"Model {model} failed: {response.status_code}")
-                continue
-                
-        except Exception as e:
-            print(f"Error with model {model}: {e}")
-            continue
-    
-    return None
-
-def get_weather(city):
-    """Get weather from OpenWeatherMap API"""
-    if not OPENWEATHER_API_KEY:
+        print("No OpenRouter API key!")
         return None
     
     try:
-        url = f"https://api.openweathermap.org/data/2.5/weather?q={city}&appid={OPENWEATHER_API_KEY}&units=metric"
-        response = requests.get(url, timeout=8)
+        url = "https://openrouter.ai/api/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://t.me/Jarvs_Ai_bot",
+            "X-Title": "J.A.R.V.I.S. Bot"
+        }
         
+        # Get stored user info
+        user_name = get_user_name(user_id)
+        
+        # Build system prompt with user context
+        system_prompt = """You are J.A.R.V.I.S., a helpful AI assistant created by @Introspection007.
+Be friendly, conversational, and answer questions naturally like ChatGPT.
+Keep responses concise but helpful (1-3 sentences)."""
+        
+        if user_name:
+            system_prompt += f" The user's name is {user_name}. Address them by name occasionally."
+
+        # Get conversation history
+        history = get_recent_messages(user_id, limit=15)
+        
+        # Build messages with full context
+        messages = [{"role": "system", "content": system_prompt}]
+        
+        # Add conversation history
+        for msg in history:
+            messages.append({"role": msg["role"], "content": msg["content"]})
+        
+        # Add current message
+        messages.append({"role": "user", "content": user_message})
+        
+        print(f"📨 Sending {len(messages)} messages to AI...")
+
+        payload = {
+            "model": "qwen/qwen3-32b:free",  # Better ChatGPT-like model
+            "messages": messages,
+            "temperature": 0.7,
+            "max_tokens": 250
+        }
+        
+        response = requests.post(url, json=payload, headers=headers, timeout=8)
+        
+        print(f"📥 OpenRouter response: {response.status_code}")
+        
+        if response.status_code == 200:
+            result = response.json()
+            reply = result["choices"][0]["message"]["content"]
+            
+            # Save conversation
+            save_conversation(user_id, "user", user_message)
+            save_conversation(user_id, "assistant", reply)
+            
+            # Cleanup old messages
+            cleanup_old_conversations(user_id)
+            
+            return reply
+        else:
+            print(f"❌ OpenRouter error: {response.status_code} - {response.text[:200]}")
+            return None
+            
+    except requests.exceptions.Timeout:
+        print("⏰ OpenRouter timeout")
+        return None
+    except Exception as e:
+        print(f"❌ AI error: {e}")
+        return None
+
+# ============ COMMAND FUNCTIONS ============
+def get_weather(city):
+    if not OPENWEATHER_API_KEY:
+        return None
+    try:
+        url = f"https://api.openweathermap.org/data/2.5/weather?q={city}&appid={OPENWEATHER_API_KEY}&units=metric"
+        response = requests.get(url, timeout=6)
         if response.status_code == 200:
             data = response.json()
             return {
@@ -86,80 +336,42 @@ def get_weather(city):
                 "wind": data["wind"]["speed"]
             }
         return None
-    except Exception as e:
-        print(f"Weather error: {e}")
+    except:
         return None
 
 def get_local_time(city=None):
-    """Get local time for a city"""
     try:
-        if city:
+        if city and OPENWEATHER_API_KEY:
             geo_url = f"http://api.openweathermap.org/geo/1.0/direct?q={city}&limit=1&appid={OPENWEATHER_API_KEY}"
             response = requests.get(geo_url, timeout=5)
-            
             if response.status_code == 200 and response.json():
                 lat = response.json()[0]["lat"]
                 lon = response.json()[0]["lon"]
                 timezone_str = tf.timezone_at(lat=lat, lng=lon)
                 city_name = response.json()[0]["name"]
-                
                 if timezone_str:
                     tz = pytz.timezone(timezone_str)
                     now = datetime.now(tz)
-                    return {
-                        "city": city_name,
-                        "time": now.strftime('%I:%M %p'),
-                        "date": now.strftime('%A, %B %d, %Y')
-                    }
-        
+                    return {"city": city_name, "time": now.strftime('%I:%M %p'), "date": now.strftime('%A, %B %d, %Y')}
         tz = pytz.timezone("Asia/Kolkata")
         now = datetime.now(tz)
-        return {
-            "city": "India",
-            "time": now.strftime('%I:%M %p'),
-            "date": now.strftime('%A, %B %d, %Y')
-        }
+        return {"city": "India", "time": now.strftime('%I:%M %p'), "date": now.strftime('%A, %B %d, %Y')}
     except:
         tz = pytz.timezone("Asia/Kolkata")
         now = datetime.now(tz)
-        return {
-            "city": "India",
-            "time": now.strftime('%I:%M %p'),
-            "date": now.strftime('%A, %B %d, %Y')
-        }
+        return {"city": "India", "time": now.strftime('%I:%M %p'), "date": now.strftime('%A, %B %d, %Y')}
 
-# Simple fallback responses
-def get_fallback_response(user_message):
-    msg_lower = user_message.lower()
-    
-    if "hello" in msg_lower or "hi" in msg_lower:
-        return "Hello! How can I help you today?"
-    elif "how are you" in msg_lower:
-        return "I'm doing great! Ready to assist you."
-    elif "joke" in msg_lower:
-        jokes = [
-            "Why don't scientists trust atoms? Because they make up everything!",
-            "What do you call a fake noodle? An impasta!",
-            "Why did the scarecrow win an award? He was outstanding in his field!",
-            "What do you call a bear with no teeth? A gummy bear!"
-        ]
-        return random.choice(jokes)
-    elif "who are you" in msg_lower or "your name" in msg_lower:
-        return "I'm J.A.R.V.I.S., your personal AI assistant created by @Introspection007!"
-    elif "time" in msg_lower:
-        time_data = get_local_time()
-        return f"It's {time_data['time']} in {time_data['city']}"
-    elif "weather" in msg_lower:
-        return "Use /weather [city] to get weather for any city!"
-    else:
-        return "I'm J.A.R.V.I.S.! Ask me about weather, time, jokes, or anything else!"
-
+# ============ MAIN WEBHOOK ============
 @app.route(f"/webhook/{TOKEN}", methods=["POST"])
 def webhook():
     try:
         update = request.get_json()
         message = update.get("message", {})
         chat_id = message.get("chat", {}).get("id")
+        user_id = message.get("from", {}).get("id")
+        username = message.get("from", {}).get("username", "")
+        first_name = message.get("from", {}).get("first_name", "")
+        last_name = message.get("from", {}).get("last_name", "")
         text = message.get("text", "")
         
         if not chat_id or not text:
@@ -172,11 +384,46 @@ def webhook():
         except:
             pass
         
+        # Save user to Supabase
+        save_user(user_id, username, first_name, last_name)
+        
+        # Check if user is sharing their name (safer regex)
+        msg_lower = text.lower()
+        name_match = re.search(r'(?:my name is|call me)\s+([A-Za-z ]{2,30})$', msg_lower)
+        if name_match:
+            name = name_match.group(1).strip().title()
+            if len(name) >= 2:
+                save_user_name(user_id, name)
+                reply = f"🎉 Nice to meet you, **{name}**! I'll remember your name."
+                return send_response(chat_id, reply)
+        
+        # Get stored name
+        user_name = get_user_name(user_id)
+        
         # Handle commands
         if text == "/start":
-            reply = """🔷 **J.A.R.V.I.S. Online** 🔷
+            if user_name:
+                reply = f"""🔷 **J.A.R.V.I.S. Online** 🔷
 
-I'm your personal AI assistant - just like ChatGPT!
+Welcome back {user_name}! I'm your personal AI assistant.
+
+**Commands:**
+/start - Show menu
+/help - All commands
+/time - Current time
+/time [city] - Time in any city
+/weather [city] - Get weather
+/whatiknow - What I remember
+/forget - Reset memory
+
+**Just type anything - I'll chat with you naturally!**
+
+━━━━━━━━━━━━━━━━━━━━━
+🤖 **Powered By @Introspection007**"""
+            else:
+                reply = """🔷 **J.A.R.V.I.S. Online** 🔷
+
+I'm your personal AI assistant!
 
 **Commands:**
 /start - Show menu
@@ -185,7 +432,7 @@ I'm your personal AI assistant - just like ChatGPT!
 /time [city] - Time in any city
 /weather [city] - Get weather
 
-**Just type anything - I'll chat with you naturally!**
+**Try:** *"my name is [your name]"*
 
 ━━━━━━━━━━━━━━━━━━━━━
 🤖 **Powered By @Introspection007**"""
@@ -196,12 +443,31 @@ I'm your personal AI assistant - just like ChatGPT!
 /time - Current time (India)
 /time London - Time in London
 /weather London - Weather in London
+/whatiknow - What I remember
+/forget - Reset my memory
 /start - Show menu
 
 **Or just chat with me naturally!**
 
 ━━━━━━━━━━━━━━━━━━━━━
 🤖 **Powered By @Introspection007**"""
+        
+        elif text == "/whatiknow":
+            profile = get_user_profile(user_id)
+            info = "📝 **What I remember about you:**\n\n"
+            if user_name:
+                info += f"👤 Name: {user_name}\n"
+            if profile.get("age"):
+                info += f"🎂 Age: {profile['age']}\n"
+            if profile.get("location"):
+                info += f"📍 Location: {profile['location']}\n"
+            if len(info) < 50:
+                info += "Tell me about yourself!"
+            reply = info + "\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
+        
+        elif text == "/forget":
+            clear_user_memory(user_id)
+            reply = f"🗑️ All memories erased, {user_name or 'friend'}!\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
         
         elif text.startswith("/time"):
             parts = text.split(maxsplit=1)
@@ -235,25 +501,53 @@ I'm your personal AI assistant - just like ChatGPT!
                     reply = f"🌤️ Couldn't find weather for '{parts[1]}'.\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"""
         
         else:
-            # Try AI first
-            ai_response = get_ai_response(text)
+            # Try AI response with full conversation memory
+            ai_response = get_ai_response(text, user_id)
             
             if ai_response:
                 reply = f"🤖 {ai_response}\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
             else:
-                # Use fallback responses
-                fallback = get_fallback_response(text)
+                # Simple fallback responses
+                if "hello" in msg_lower or "hi" in msg_lower:
+                    fallback = f"Hello {user_name or ''}! How can I help you today?"
+                elif "joke" in msg_lower:
+                    jokes = [
+                        "Why don't scientists trust atoms? Because they make up everything!",
+                        "What do you call a fake noodle? An impasta!",
+                        "Why did the scarecrow win an award? He was outstanding in his field!"
+                    ]
+                    fallback = random.choice(jokes)
+                elif "who created you" in msg_lower or "who is your creator" in msg_lower:
+                    fallback = "I was created by @Introspection007!"
+                elif "weather" in msg_lower:
+                    fallback = "Use /weather [city] to get weather!"
+                elif "time" in msg_lower:
+                    time_data = get_local_time()
+                    fallback = f"It's {time_data['time']} in {time_data['city']}"
+                else:
+                    fallback = f"I'm J.A.R.V.I.S.! {user_name or ''} Ask me about weather, time, jokes, or anything else!"
+                
                 reply = f"🤖 {fallback}\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 **Powered By @Introspection007**"
         
-        url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-        payload = {"chat_id": chat_id, "text": reply, "parse_mode": "Markdown"}
-        requests.post(url, json=payload, timeout=10)
-        
-        return "", 200
+        return send_response(chat_id, reply)
         
     except Exception as e:
         print(f"Error: {e}")
         return "", 200
+
+def send_response(chat_id, reply):
+    """Send response to Telegram - NO Markdown to avoid errors"""
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    
+    # Clean message (remove any problematic characters)
+    reply = reply.replace('_', '').replace('*', '').replace('[', '').replace(']', '').replace('(', '').replace(')', '')
+    
+    payload = {"chat_id": chat_id, "text": reply[:4000]}
+    requests.post(url, json=payload, timeout=10)
+    return "", 200
+
+# Initialize tables on startup
+init_tables()
 
 @app.route("/", methods=["GET"])
 def index():
