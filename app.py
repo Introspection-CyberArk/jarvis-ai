@@ -153,15 +153,21 @@ def get_recent_messages(user_id, limit=15):
         return []
 
 def get_user_name(user_id):
+    """Get stored name - ALWAYS check database"""
     profile = get_user_profile(user_id)
-    return profile.get("preferred_name")
+    name = profile.get("preferred_name")
+    if name:
+        print(f"📌 Retrieved name: {name} for user {user_id}")
+    else:
+        print(f"📌 No name found for user {user_id}")
+    return name
 
 def save_user_name(user_id, name):
     """Save user's preferred name"""
     profile = get_user_profile(user_id)
     profile["preferred_name"] = name
     save_user_profile(user_id, profile)
-    print(f"📝 Saved name: {name} for user {user_id}")
+    print(f"✅ Saved name: {name} for user {user_id}")
 
 def clear_user_memory(user_id):
     if not supabase:
@@ -170,6 +176,7 @@ def clear_user_memory(user_id):
         supabase.table("conversations").delete().eq("user_id", user_id).execute()
         supabase.table("user_profile").delete().eq("user_id", user_id).execute()
         supabase.table("user_facts").delete().eq("user_id", user_id).execute()
+        print(f"🗑️ Cleared memory for user {user_id}")
     except:
         pass
 
@@ -279,6 +286,55 @@ def get_local_time(city=None):
         now = datetime.now(tz)
         return {"city": "India", "time": now.strftime('%I:%M %p'), "date": now.strftime('%A, %B %d, %Y')}
 
+# ============ FALLBACK RESPONSES ============
+def get_fallback_response(user_message, user_name):
+    """Smart fallback responses that use stored name"""
+    msg_lower = user_message.lower().strip()
+    
+    # Check for "remember me" - ALWAYS use stored name if available
+    if "remember me" in msg_lower or "do you remember" in msg_lower:
+        if user_name:
+            return f"Of course I remember you, {user_name}! 😊"
+        else:
+            return "I don't know your name yet. Tell me 'I am [your name]'!"
+    
+    # Check for "what's my name" or "my name"
+    if "my name" in msg_lower or "what's my name" in msg_lower:
+        if user_name:
+            return f"Your name is {user_name}! 😊"
+        else:
+            return "I don't know your name yet. Tell me 'I am [your name]'!"
+    
+    # Check for "who are you" or "your name"
+    if "who are you" in msg_lower or "your name" in msg_lower:
+        return "I'm J.A.R.V.I.S., your personal AI assistant created by @Introspection007!"
+    
+    # Check for "who created you"
+    if "who created you" in msg_lower or "who made you" in msg_lower:
+        return "I was created by @Introspection007!"
+    
+    # Check for "joke"
+    if "joke" in msg_lower:
+        jokes = [
+            "Why don't scientists trust atoms? Because they make up everything!",
+            "What do you call a fake noodle? An impasta!",
+            "Why did the scarecrow win an award? He was outstanding in his field!"
+        ]
+        return random.choice(jokes)
+    
+    # Check for "hello" or "hi"
+    if msg_lower in ["hello", "hi", "hey", "hola", "sup"]:
+        if user_name:
+            return f"Hello {user_name}! How can I help you today?"
+        else:
+            return "Hello! How can I help you today?"
+    
+    # Default fallback
+    if user_name:
+        return f"I'm J.A.R.V.I.S.! How can I help you, {user_name}?"
+    else:
+        return "I'm J.A.R.V.I.S.! Tell me 'I am [your name]' so I can address you properly!"
+
 # ============ MAIN WEBHOOK ============
 @app.route(f"/webhook/{TOKEN}", methods=["POST"])
 def webhook():
@@ -304,10 +360,8 @@ def webhook():
         
         save_user(user_id, username, first_name, last_name)
         
-        # ============ NAME EXTRACTION - MORE FLEXIBLE ============
+        # ============ NAME EXTRACTION ============
         msg_lower = text.lower().strip()
-        
-        # Check for various name patterns
         name_extracted = None
         
         # Pattern 1: "I am Spiderman", "I'm Spiderman", "Im Spiderman"
@@ -327,18 +381,18 @@ def webhook():
             if match:
                 name_extracted = match.group(1).strip().title()
         
-        # If a name was extracted, save it
+        # If a name was extracted, save it and respond
         if name_extracted:
             name_extracted = name_extracted.replace("Spider Man", "Spider-Man")
-            # Make sure it's a valid name (not a common word)
             invalid_names = ['a', 'an', 'the', 'yeah', 'no', 'ok', 'okay', 'well', 'so', 'then', 'like', 'just', 'hello', 'hi', 'hey', 'what', 'who', 'where', 'when', 'why', 'how']
             if name_extracted.lower() not in invalid_names and len(name_extracted) >= 2 and len(name_extracted) <= 30:
                 save_user_name(user_id, name_extracted)
-                reply = f"🎉 Nice to meet you, **{name_extracted}**! I'll remember your name."
+                reply = f"🎉 Nice to meet you, {name_extracted}! I'll remember your name."
                 return send_response(chat_id, reply)
         
-        # Get stored name
+        # ============ GET STORED NAME ============
         user_name = get_user_name(user_id)
+        print(f"🔍 User {user_id} has name: {user_name}")
         
         # ============ COMMAND HANDLERS ============
         if text == "/start":
@@ -407,7 +461,7 @@ Or just chat with me naturally!
         
         elif text == "/forget":
             clear_user_memory(user_id)
-            reply = f"🗑️ All memories erased, {user_name or 'friend'}!\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 Powered By @Introspection007"
+            reply = f"🗑️ All memories erased!\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 Powered By @Introspection007"
         
         elif text.startswith("/time"):
             parts = text.split(maxsplit=1)
@@ -441,36 +495,14 @@ Or just chat with me naturally!
                     reply = f"🌤️ Couldn't find weather for '{parts[1]}'.\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 Powered By @Introspection007"""
         
         else:
-            # Try AI response with full conversation memory
+            # Try AI response first
             ai_response = get_ai_response(text, user_id)
             
             if ai_response:
                 reply = f"🤖 {ai_response}\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 Powered By @Introspection007"
             else:
-                # Fallback responses
-                if "hello" in msg_lower or "hi" in msg_lower:
-                    fallback = f"Hello {user_name or ''}! How can I help you today?"
-                elif "joke" in msg_lower:
-                    jokes = [
-                        "Why don't scientists trust atoms? Because they make up everything!",
-                        "What do you call a fake noodle? An impasta!",
-                        "Why did the scarecrow win an award? He was outstanding in his field!"
-                    ]
-                    fallback = random.choice(jokes)
-                elif "who created you" in msg_lower or "who is your creator" in msg_lower:
-                    fallback = "I was created by @Introspection007!"
-                elif "weather" in msg_lower:
-                    fallback = "Use /weather [city] to get weather!"
-                elif "time" in msg_lower:
-                    time_data = get_local_time()
-                    fallback = f"It's {time_data['time']} in {time_data['city']}"
-                elif "remember me" in msg_lower and user_name:
-                    fallback = f"Of course I remember you, {user_name}! 😊"
-                elif "remember me" in msg_lower and not user_name:
-                    fallback = "I don't know your name yet. Tell me 'I am [your name]'!"
-                else:
-                    fallback = f"I'm J.A.R.V.I.S.! {user_name or ''} Ask me about weather, time, jokes, or anything else!"
-                
+                # Use smart fallback responses
+                fallback = get_fallback_response(text, user_name)
                 reply = f"🤖 {fallback}\n\n━━━━━━━━━━━━━━━━━━━━━\n🤖 Powered By @Introspection007"
         
         return send_response(chat_id, reply)
