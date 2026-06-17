@@ -12,7 +12,7 @@ import random
 import re
 from datetime import datetime
 
-# ===== IMPORTANT: ALL IMPORTS MUST BE HERE =====
+# ===== IMPORTS =====
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 import openai
@@ -78,22 +78,27 @@ async def get_ai_response(messages, model_override=None, retry_count=0):
     logger.info(f"Using model: {selected_model}")
     
     try:
+        # Log what we're sending
+        logger.info(f"Sending {len(messages)} messages to OpenRouter")
+        
         response = await asyncio.to_thread(
             openai.ChatCompletion.create,
             model=selected_model,
             messages=messages,
-            max_tokens=800,
+            max_tokens=500,  # Reduced for faster response
             temperature=0.7,
             base_url=OPENROUTER_BASE_URL,
             api_key=OPENROUTER_API_KEY,
             extra_headers={
                 "HTTP-Referer": "https://telegram-bot.ai",
-                "X-Title": "AI Memory Bot"
-            }
+                "X-Title": "Jarvis AI Bot"
+            },
+            timeout=30  # Add timeout
         )
         
         ai_response = response.choices[0].message.content
         MODEL_STATS[selected_model]["success"] += 1
+        logger.info(f"✅ {selected_model} responded successfully")
         return ai_response, selected_model
         
     except Exception as e:
@@ -103,9 +108,12 @@ async def get_ai_response(messages, model_override=None, retry_count=0):
         if retry_count < len(MODELS):
             current_index = MODELS.index(selected_model)
             next_index = (current_index + 1) % len(MODELS)
+            logger.info(f"🔄 Falling back to {MODELS[next_index]}")
             return await get_ai_response(messages, model_override=MODELS[next_index], retry_count=retry_count + 1)
         else:
-            raise Exception("All models failed")
+            # Return a friendly error message instead of raising exception
+            error_msg = "⚠️ All AI models are currently busy. Please try again in a moment!"
+            return error_msg, "Error"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
