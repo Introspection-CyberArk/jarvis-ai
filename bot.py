@@ -1,4 +1,5 @@
 import os
+import sys
 import asyncio
 import logging
 import random
@@ -8,6 +9,14 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 import openai
 from database import DatabaseManager
 from memory_manager import MemoryManager
+
+# Add this to handle missing modules gracefully
+try:
+    import httpx
+except ImportError:
+    print("⚠️ httpx not found. Installing...")
+    os.system("pip install httpx==0.24.1")
+# Rest of your code...
 
 # Setup logging
 logging.basicConfig(
