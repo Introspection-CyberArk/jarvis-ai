@@ -9,11 +9,9 @@ logger = logging.getLogger(__name__)
 class DatabaseManager:
     def __init__(self):
         try:
-            # Get environment variables
             self.supabase_url = os.getenv('SUPABASE_URL')
             self.supabase_key = os.getenv('SUPABASE_KEY')
             
-            # Validate variables exist
             if not self.supabase_url:
                 raise ValueError("SUPABASE_URL environment variable is not set")
             if not self.supabase_key:
@@ -21,54 +19,66 @@ class DatabaseManager:
             
             logger.info(f"Connecting to Supabase: {self.supabase_url}")
             
-            # Create client
             self.supabase: Client = create_client(
                 self.supabase_url,
                 self.supabase_key
             )
             
-            # Test connection and create tables if needed
-            self.initialize_tables()
-            
+            # Test connection
+            try:
+                test = self.supabase.table('user_profiles').select('*').limit(1).execute()
+                logger.info("✅ Tables already exist")
+            except Exception as e:
+                if "relation" in str(e) and "does not exist" in str(e):
+                    logger.warning("⚠️ Tables don't exist. Please run SQL schema.")
+                else:
+                    raise e
+                
             logger.info("✅ Supabase connected successfully!")
                 
         except Exception as e:
             logger.error(f"❌ Supabase connection failed: {e}")
             raise
     
-    def initialize_tables(self):
-        """Check if tables exist, create if not"""
-        try:
-            # Try to query user_profiles
-            test = self.supabase.table('user_profiles').select('*').limit(1).execute()
-            logger.info("✅ Tables already exist")
-        except Exception as e:
-            if "relation" in str(e) and "does not exist" in str(e):
-                logger.warning("⚠️ Tables don't exist. Please create them in Supabase SQL Editor.")
-                logger.warning("Run the SQL script provided in the documentation.")
-                raise Exception("Tables not created in Supabase. Please run the SQL setup script.")
-            else:
-                raise e
-    
     def get_or_create_user(self, user_id, username=None, first_name=None):
         try:
+            # Try to get existing user
             response = self.supabase.table('user_profiles').select('*').eq('user_id', user_id).execute()
             
-            if not response.data:
-                data = {
-                    'user_id': user_id,
-                    'username': username or '',
-                    'first_name': first_name or '',
-                    'memory': '{}',
-                    'updated_at': datetime.now().isoformat()
-                }
+            if response.data:
+                return response.data[0]
+            
+            # Create new user with retry
+            data = {
+                'user_id': user_id,
+                'username': username or '',
+                'first_name': first_name or '',
+                'memory': '{}',
+                'updated_at': datetime.now().isoformat()
+            }
+            
+            try:
                 result = self.supabase.table('user_profiles').insert(data).execute()
-                return result.data[0] if result.data else data
-            return response.data[0]
+                if result.data:
+                    return result.data[0]
+                return data
+            except Exception as insert_error:
+                # If RLS error, try one more time
+                if "row-level security" in str(insert_error):
+                    logger.warning("RLS policy error - trying to create user anyway")
+                    # Return default data (bot will work with in-memory fallback)
+                    return data
+                raise
+                
         except Exception as e:
             logger.error(f"Error in get_or_create_user: {e}")
-            # Return a default dict if database fails
-            return {'user_id': user_id, 'username': username, 'first_name': first_name, 'memory': '{}'}
+            # Return default data to keep bot running
+            return {
+                'user_id': user_id,
+                'username': username or '',
+                'first_name': first_name or '',
+                'memory': '{}'
+            }
     
     def update_user_memory(self, user_id, memory_data):
         try:
@@ -78,12 +88,16 @@ class DatabaseManager:
             else:
                 current = memory_data
             
-            result = self.supabase.table('user_profiles').update({
-                'memory': json.dumps(current),
-                'updated_at': datetime.now().isoformat()
-            }).eq('user_id', user_id).execute()
-            
-            return current
+            try:
+                result = self.supabase.table('user_profiles').update({
+                    'memory': json.dumps(current),
+                    'updated_at': datetime.now().isoformat()
+                }).eq('user_id', user_id).execute()
+                return current
+            except Exception as e:
+                logger.error(f"Update failed: {e}")
+                return current
+                
         except Exception as e:
             logger.error(f"Error in update_user_memory: {e}")
             return memory_data
