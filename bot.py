@@ -197,7 +197,7 @@ def main():
     
     app = Application.builder().token(token).build()
     
-    # Only 3 commands - clean and minimal!
+    # Only 2 commands - clean and minimal!
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("credits", credits_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat_with_ai))
