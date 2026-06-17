@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Jarvis AI - Telegram Bot with Memory
+Jarvis AI - Clean Telegram Bot
 Powered By @Introspection007
 """
 
@@ -9,12 +9,10 @@ import sys
 import logging
 import asyncio
 import random
-import re
 from datetime import datetime
 
-# ===== IMPORTS =====
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import openai
 from database import DatabaseManager
 from memory_manager import MemoryManager
@@ -56,64 +54,48 @@ except Exception as e:
 OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
-# Models
+# Models (auto-fallback)
 MODELS = [
     "openrouter/free",
     "openai/gpt-oss-120b:free", 
     "meta-llama/llama-3.3-70b:free"
 ]
 
-MODEL_STATS = {model: {"success": 0, "fail": 0} for model in MODELS}
+SYSTEM_PROMPT = """You are Jarvis AI, a friendly, helpful AI assistant. 
+You naturally learn about users from conversation and remember their details.
+You were created by @Introspection007.
+Keep responses warm, natural, and conversational."""
 
-SYSTEM_PROMPT = """You are Jarvis AI, a friendly, helpful AI assistant with memory. You remember user details like name, interests, and preferences. 
-You adapt your responses based on what you know about the user. Keep conversations natural and engaging. 
-You were created by @Introspection007 and you're proud of it!"""
-
-async def get_ai_response(messages, model_override=None, retry_count=0):
-    if model_override:
-        selected_model = model_override
-    else:
-        selected_model = random.choice(MODELS)
-    
+async def get_ai_response(messages, retry_count=0):
+    selected_model = random.choice(MODELS)
     logger.info(f"Using model: {selected_model}")
     
     try:
-        # Log what we're sending
-        logger.info(f"Sending {len(messages)} messages to OpenRouter")
-        
         response = await asyncio.to_thread(
             openai.ChatCompletion.create,
             model=selected_model,
             messages=messages,
-            max_tokens=500,  # Reduced for faster response
+            max_tokens=500,
             temperature=0.7,
             base_url=OPENROUTER_BASE_URL,
             api_key=OPENROUTER_API_KEY,
             extra_headers={
                 "HTTP-Referer": "https://telegram-bot.ai",
-                "X-Title": "Jarvis AI Bot"
+                "X-Title": "Jarvis AI"
             },
-            timeout=30  # Add timeout
+            timeout=30
         )
         
         ai_response = response.choices[0].message.content
-        MODEL_STATS[selected_model]["success"] += 1
-        logger.info(f"✅ {selected_model} responded successfully")
-        return ai_response, selected_model
+        logger.info(f"✅ Response received")
+        return ai_response
         
     except Exception as e:
-        logger.error(f"Model {selected_model} failed: {e}")
-        MODEL_STATS[selected_model]["fail"] += 1
-        
-        if retry_count < len(MODELS):
-            current_index = MODELS.index(selected_model)
-            next_index = (current_index + 1) % len(MODELS)
-            logger.info(f"🔄 Falling back to {MODELS[next_index]}")
-            return await get_ai_response(messages, model_override=MODELS[next_index], retry_count=retry_count + 1)
+        logger.error(f"Model failed: {e}")
+        if retry_count < 2:
+            return await get_ai_response(messages, retry_count + 1)
         else:
-            # Return a friendly error message instead of raising exception
-            error_msg = "⚠️ All AI models are currently busy. Please try again in a moment!"
-            return error_msg, "Error"
+            return "I'm having a little trouble thinking right now. Try again in a moment! 🙏"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -121,156 +103,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     db.get_or_create_user(user_id, username=user.username, first_name=user.first_name)
     
-    welcome = f"""🚀 Welcome {user.first_name}!
+    welcome = f"""👋 Hey {user.first_name}!
 
-I'm Jarvis AI, your intelligent assistant with memory and 3 AI models!
+I'm Jarvis AI - just chat with me naturally and I'll remember what you tell me!
 
-🔥 Features:
-• Multi-model AI (3 models with auto-fallback)
-• Smart memory storage
-• Auto-memory extraction
-• Model performance tracking
+💬 Try saying things like:
+• "My name is..."
+• "I love..."
+• "I work as..."
+• "My favorite..."
 
-📋 Commands:
-/start - Welcome
-/memory - View memories
-/add_memory key: value - Add memory
-/clear_memory - Clear all
-/models - Model stats
-/switch model - Switch model
-/help - Help
-
-💡 Tell me about yourself and I'll remember!
+No commands needed - just talk to me! ✨
 
 ━━━━━━━━━━━━━━━━━━━━━
-⚡ Powered By @Introspection007
+⚡ @Introspection007
 ━━━━━━━━━━━━━━━━━━━━━"""
     
     await update.message.reply_text(welcome)
-
-async def memory_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    memory = db.get_user_memory(user_id)
-    
-    if not memory or len(memory) == 0:
-        await update.message.reply_text("📭 No memories yet. Use /add_memory or tell me about yourself!")
-        return
-    
-    text = "🧠 Your Memories:\n\n"
-    for key, value in memory.items():
-        if isinstance(value, list):
-            text += f"• {key}: {', '.join(str(v) for v in value)}\n"
-        else:
-            text += f"• {key}: {value}\n"
-    
-    text += "\n━━━━━━━━━━━━━━━━━━━━━\n⚡ Powered By @Introspection007"
-    await update.message.reply_text(text)
-
-async def add_memory_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    
-    if not context.args:
-        await update.message.reply_text(
-            "⚠️ Usage: /add_memory key: value\n\n"
-            "Examples:\n"
-            "• /add_memory name: John\n"
-            "• /add_memory hobby: Coding\n"
-            "• /add_memory favorite_movie: Inception\n"
-            "• /add_memory location: New York\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━\n⚡ Powered By @Introspection007"
-        )
-        return
-    
-    text = ' '.join(context.args)
-    
-    try:
-        if ':' not in text:
-            await update.message.reply_text("⚠️ Use: key: value")
-            return
-        
-        key, value = text.split(':', 1)
-        key = key.strip()
-        value = value.strip()
-        
-        if not key or not value:
-            await update.message.reply_text("⚠️ Key and value cannot be empty")
-            return
-        
-        current = db.get_user_memory(user_id)
-        current[key] = value
-        db.update_user_memory(user_id, current)
-        db.add_memory(user_id, f"{key}: {value}")
-        
-        await update.message.reply_text(
-            f"✅ Memory Added!\n\n"
-            f"• {key}: {value}\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n⚡ Powered By @Introspection007"
-        )
-    except Exception as e:
-        logger.error(f"Add memory error: {e}")
-        await update.message.reply_text("⚠️ Error! Use: /add_memory key: value")
-
-async def clear_memory_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [
-            InlineKeyboardButton("✅ Yes", callback_data="clear_yes"),
-            InlineKeyboardButton("❌ No", callback_data="clear_no")
-        ]
-    ]
-    await update.message.reply_text(
-        "⚠️ Clear ALL memories?\n\nThis action cannot be undone!",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-async def models_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = "🤖 Model Performance Stats\n\n"
-    for model, stats in MODEL_STATS.items():
-        total = stats["success"] + stats["fail"]
-        rate = (stats["success"] / total * 100) if total > 0 else 0
-        status = "🟢 Online" if stats["fail"] < 3 else "🟡 Degraded"
-        text += f"{status}\n{model}\n├ Success: {stats['success']}\n├ Fail: {stats['fail']}\n└ Rate: {rate:.0f}%\n\n"
-    
-    text += "━━━━━━━━━━━━━━━━━━━━━\n⚡ Powered By @Introspection007"
-    await update.message.reply_text(text)
-
-async def switch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        models = "\n".join([f"• {m}" for m in MODELS])
-        await update.message.reply_text(
-            f"Usage: /switch model\n\nAvailable Models:\n{models}\n\n"
-            f"Example: /switch meta-llama/llama-3.3-70b:free\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n⚡ Powered By @Introspection007"
-        )
-        return
-    
-    model = ' '.join(context.args)
-    if model not in MODELS:
-        await update.message.reply_text(f"❌ Model '{model}' not found. Use /models to see available models.")
-        return
-    
-    context.user_data['preferred_model'] = model
-    await update.message.reply_text(
-        f"✅ Switched to: {model}\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n⚡ Powered By @Introspection007"
-    )
-
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = update.effective_user.id
-    
-    if query.data == "clear_yes":
-        db.update_user_memory(user_id, {})
-        await query.edit_message_text(
-            "✅ Memory cleared successfully!\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━\n⚡ Powered By @Introspection007"
-        )
-    elif query.data == "clear_no":
-        await query.edit_message_text(
-            "👍 Memory clear canceled.\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━\n⚡ Powered By @Introspection007"
-        )
 
 async def chat_with_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -280,13 +129,15 @@ async def chat_with_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db.get_or_create_user(user_id, username=user.username, first_name=user.first_name)
     db.add_chat_history(user_id, 'user', message)
     
+    # Get user memory
     memory = db.get_user_memory(user_id)
     history = db.get_chat_history(user_id, limit=5)
     
+    # Build messages
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     
     if memory:
-        ctx = "User info:\n"
+        ctx = "User info I know:\n"
         for k, v in memory.items():
             ctx += f"- {k}: {v}\n"
         messages.append({"role": "system", "content": ctx})
@@ -299,12 +150,13 @@ async def chat_with_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.chat.send_action(action="typing")
     
     try:
-        preferred = context.user_data.get('preferred_model')
-        response, model = await get_ai_response(messages, preferred)
+        # Get AI response
+        response = await get_ai_response(messages)
         
+        # Store in history
         db.add_chat_history(user_id, 'assistant', response)
         
-        # Auto-extract memory
+        # Auto-learn from conversation
         try:
             memory_mgr.extract_memory_from_conversation(user_id, [
                 {'role': 'user', 'content': message},
@@ -313,76 +165,30 @@ async def chat_with_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
         
-        await update.message.reply_text(
-            f"🤖 {model}\n\n{response}\n\n━━━━━━━━━━━━━━━━━━━━━\n⚡ Powered By @Introspection007"
-        )
+        await update.message.reply_text(response)
         
     except Exception as e:
-        logger.error(f"AI error: {e}")
-        await update.message.reply_text(
-            "⚠️ AI temporarily unavailable. Please try again!\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━\n⚡ Powered By @Introspection007"
-        )
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    help_text = """🤖 Jarvis AI Help
-
-📋 Commands:
-/start - Welcome message
-/memory - View your memories
-/add_memory key: value - Add custom memory
-/clear_memory - Clear all memories
-/models - View model stats
-/switch model - Switch AI model
-/help - Show this help
-
-🔧 Available Models:
-• openrouter/free - Fast, general purpose
-• openai/gpt-oss-120b:free - Advanced reasoning
-• meta-llama/llama-3.3-70b:free - Latest open source
-
-📝 Examples:
-/add_memory name: Alex
-/add_memory hobby: Python
-/add_memory favorite_movie: Inception
-
-💡 Tips:
-• I auto-learn from our conversations
-• Use /switch to change AI models
-• Check /models for performance stats
-
-━━━━━━━━━━━━━━━━━━━━━
-⚡ Powered By @Introspection007
-━━━━━━━━━━━━━━━━━━━━━"""
-    
-    await update.message.reply_text(help_text)
+        logger.error(f"Error: {e}")
+        await update.message.reply_text("⚠️ Oops! Something went wrong. Try again! 🙏")
 
 async def credits_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    credits_text = """╔══════════════════════════════════════╗
+    credits = """╔══════════════════════════════════════╗
 ║         🤖 JARVIS AI              ║
-║    Advanced Telegram Bot           ║
 ╠══════════════════════════════════════╣
-║                                     ║
 ║  🚀 Creator: @Introspection007      ║
-║  📅 Version: 1.0                   ║
+║  📅 Version: 2.0                   ║
 ║  🔥 Status: Active                 ║
 ║                                     ║
 ║  ✨ Features:                      ║
-║  • Multi-Model AI                  ║
-║  • Smart Memory                    ║
-║  • Auto-Learning                   ║
-║  • Supabase Storage                ║
-║                                     ║
-║  🤖 Models:                        ║
-║  • OpenRouter Free                 ║
-║  • OpenAI GPT-OSS 120B            ║
-║  • Meta Llama 3.3 70B             ║
-║                                     ║
+║  • Auto-learning AI                ║
+║  • Natural conversation            ║
+║  • Smart memory                    ║
+║  • Multi-model support             ║
 ╠══════════════════════════════════════╣
 ║  ⚡ Powered By @Introspection007    ║
 ╚══════════════════════════════════════╝"""
     
-    await update.message.reply_text(credits_text)
+    await update.message.reply_text(credits)
 
 def main():
     token = os.getenv('BOT_TOKEN')
@@ -391,15 +197,9 @@ def main():
     
     app = Application.builder().token(token).build()
     
+    # Only 3 commands - clean and minimal!
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("memory", memory_command))
-    app.add_handler(CommandHandler("add_memory", add_memory_command))
-    app.add_handler(CommandHandler("clear_memory", clear_memory_command))
-    app.add_handler(CommandHandler("models", models_command))
-    app.add_handler(CommandHandler("switch", switch_command))
-    app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("credits", credits_command))
-    app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat_with_ai))
     
     logger.info("🚀 Jarvis AI Bot starting...")
