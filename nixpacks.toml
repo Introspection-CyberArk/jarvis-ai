@@ -1,0 +1,28 @@
+[phases.setup]
+nixPkgs = ["python3", "postgresql_16.dev", "gcc"]
+
+[phases.install]
+cmds = [
+  "python -m venv --copies /opt/venv",
+  ". /opt/venv/bin/activate",
+  "pip install --upgrade pip",
+  "pip install httpx==0.24.1 anyio==3.7.1",
+  "pip install python-telegram-bot==20.5",
+  "pip install openai==1.6.1",
+  "pip install supabase==2.0.0",
+  "pip install python-dotenv==1.0.0",
+  "pip install psycopg2-binary==2.9.9",
+  "pip install sqlalchemy==2.0.23",
+  "pip install asyncpg==0.29.0",
+  "pip install pydantic==2.5.0",
+  "pip install typing-extensions==4.8.0"
+]
+
+[phases.build]
+cmds = [
+  ". /opt/venv/bin/activate",
+  "pip install --upgrade pip"
+]
+
+[start]
+cmd = "python bot.py"
